@@ -339,6 +339,9 @@ def main(flags=None):
 
         import pickle
         from eval import evaluate
+        with open(args.add_vocab_file, 'rb') as f:
+            label_map = pickle.load(f)
+
         def token_to_id(token):
             token = token.lower()
             try:
@@ -361,8 +364,6 @@ def main(flags=None):
             gd_labels = [json.loads(i)['tgt'] for i in f]
             gd_labels = [[token_to_id(j) for j  in i.split(' ')] for i in gd_labels]
 
-        with open(args.add_vocab_file, 'rb') as f:
-            label_map = pickle.load(f)
         id2label = {token_to_id(label_map[k]): k for k in label_map}
         out = evaluate(predict_labels, gd_labels, id2label, as_sample=True)
         del out['full']

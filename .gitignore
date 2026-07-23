@@ -1,0 +1,16 @@
+# Local validation suite requested to remain outside the published repository.
+tests/
+
+# Python and runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated training/preparation artifacts
+resource/prepared-datasets/
+resource/model_checkpoint/
+resource/ranking/
+resource/result/
+resource/log/
+models/
+.cache/

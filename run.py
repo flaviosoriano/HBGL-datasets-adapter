@@ -21,6 +21,7 @@ from transformers import BertConfig, BertTokenizer
 
 from s2s_ft import utils
 from s2s_ft.config import BertForSeq2SeqConfig
+from dataset_adapter import DatasetValidationError, prepare_fold
 
 LOGLEVEL = os.environ.get('LOGLEVEL', 'INFO').upper()
 logger = logging.getLogger(__name__)
@@ -432,6 +433,48 @@ def train(args, training_features, model, tokenizer):
     return best_macro_f1_path, best_micro_f1_path
 
 
+def resolve_dataset_inputs(args, parser):
+    """Populate HBGL's legacy file arguments from a canonical dataset fold."""
+    canonical_values = (args.dataset_dir, args.dataset_name, args.fold)
+    canonical_mode = any(value is not None for value in canonical_values)
+    if canonical_mode:
+        if not all(value is not None for value in canonical_values):
+            parser.error("--dataset-dir, --dataset-name and --fold must be supplied together")
+        legacy_values = (args.train_file, args.valid_file, args.test_file, args.add_vocab_file)
+        if any(value is not None for value in legacy_values):
+            parser.error("canonical dataset mode cannot be mixed with --train_file/--valid_file/--test_file/--add_vocab_file")
+        try:
+            prepared = prepare_fold(
+                args.dataset_dir,
+                args.dataset_name,
+                args.fold,
+                args.prepared_data_dir,
+                force=args.force_prepare,
+            )
+        except DatasetValidationError as error:
+            parser.error(str(error))
+            raise AssertionError("argparse.parser.error must exit")
+        args.train_file = str(prepared.path / "train.jsonl")
+        args.valid_file = str(prepared.path / "val.jsonl")
+        args.test_file = str(prepared.path / "test.jsonl")
+        args.add_vocab_file = str(prepared.path / "label_map.pkl")
+        if args.label_cpt is None:
+            args.label_cpt = str(prepared.path / "label_taxonomy.tsv")
+        logger.info("Using %s canonical fold %d (%s)", args.dataset_name, args.fold, prepared.path)
+    else:
+        missing = [
+            flag for flag, value in (
+                ("--train_file", args.train_file),
+                ("--valid_file", args.valid_file),
+                ("--test_file", args.test_file),
+                ("--add_vocab_file", args.add_vocab_file),
+            ) if value is None
+        ]
+        if missing:
+            parser.error("legacy file mode requires " + ", ".join(missing))
+    return args
+
+
 def get_args():
     parser = argparse.ArgumentParser()
 
@@ -439,12 +482,22 @@ def get_args():
     #                     help="Training data contains source")
     # parser.add_argument("--train_target_file", default=None, type=str, required=True,
     #                     help="Training data contains target")
-    parser.add_argument("--train_file", default=None, type=str, required=True,
-                        help="Training data (json format) for training. Keys: source and target")
-    parser.add_argument("--valid_file", default=None, type=str, required=True,
-                        help="Training data (json format) for training. Keys: source and target")
+    parser.add_argument("--train_file", default=None, type=str,
+                        help="Training JSONL. Required in legacy file mode.")
+    parser.add_argument("--valid_file", default=None, type=str,
+                        help="Validation JSONL. Required in legacy file mode.")
     parser.add_argument("--test_file", default=None, type=str,
                         help="Training data (json format) for training. Keys: source and target")
+    parser.add_argument("--dataset-dir", default=None, type=str,
+                        help="Canonical dataset root containing samples.pkl and fold_* splits.")
+    parser.add_argument("--dataset-name", choices=("WOS-150-H2", "RCV1-103-H3"), default=None,
+                        help="Canonical dataset name. Used together with --dataset-dir and --fold.")
+    parser.add_argument("--fold", default=None, type=int,
+                        help="Canonical cross-validation fold to prepare and train.")
+    parser.add_argument("--prepared-data-dir", default="resource/prepared-datasets", type=str,
+                        help="Root directory for prepared JSONL artifacts by dataset/fold.")
+    parser.add_argument("--force-prepare", action="store_true",
+                        help="Replace an incompatible prepared dataset manifest.")
     parser.add_argument("--model_type", default=None, type=str, required=True,
                         help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
     parser.add_argument("--model_name_or_path", default=None, type=str, required=True,
@@ -559,9 +612,8 @@ def get_args():
     parser.add_argument('--only_test_path', type=str, default=None)
 
     parser.add_argument('--rcv1_expand', type=str, default=None)
-    parser.add_argument
     args = parser.parse_args()
-    return args
+    return resolve_dataset_inputs(args, parser)
 
 
 def prepare(args):
