@@ -40,7 +40,7 @@ if [[ ! -x "$CONDA_DIR/bin/conda" ]]; then
     rm -f "$installer"
 fi
 
-RUNTIME_MARKER="$ROOT/.hbgl-runtime-legacy-v1.ready"
+RUNTIME_MARKER="$ROOT/.hbgl-runtime-legacy-v2.ready"
 if [[ ! -f "$RUNTIME_MARKER" ]]; then
     if [[ ! -x "$HBGL_ENV/bin/python" ]]; then
         "$CONDA_DIR/bin/conda" create --yes --prefix "$HBGL_ENV" python=3.8.18 pip
@@ -60,6 +60,7 @@ if [[ ! -f "$RUNTIME_MARKER" ]]; then
         'tokenizers==0.7.0' \
         'sacremoses==0.0.53' \
         'filelock==3.0.12' \
+        'huggingface_hub==0.20.3' \
         'regex==2021.11.10' \
         'protobuf==3.20.3'
     "$CONDA_DIR/bin/conda" run --prefix "$HBGL_ENV" python -m pip check
