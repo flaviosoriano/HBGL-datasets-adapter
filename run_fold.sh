@@ -17,6 +17,13 @@ PREPARED_DATA_DIR=${PREPARED_DATA_DIR:-"${SCRIPT_DIR}/resource/prepared-datasets
 OUTPUT_DIR=${OUTPUT_DIR:-"${SCRIPT_DIR}/models/${RUN_NAME}"}
 CACHE_DIR=${CACHE_DIR:-"${SCRIPT_DIR}/.cache/${DATASET}/fold_${FOLD}"}
 PER_GPU_TRAIN_BATCH_SIZE=${PER_GPU_TRAIN_BATCH_SIZE:-12}
+MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:-bert-base-uncased}
+# Transformers 2.x resolves the shortcut through a retired S3 URL. Prefer the
+# Hub-staged local checkpoint when this RunPod layout is available.
+LOCAL_BERT_DIR=/workspace/flaviossf/pretrained/bert-base-uncased
+if [[ "$MODEL_NAME_OR_PATH" == "bert-base-uncased" && -f "$LOCAL_BERT_DIR/config.json" && -f "$LOCAL_BERT_DIR/pytorch_model.bin" ]]; then
+  MODEL_NAME_OR_PATH=$LOCAL_BERT_DIR
+fi
 
 case "$DATASET" in
   WOS-150-H2)
@@ -50,7 +57,7 @@ COMMAND=(
   --prepared-data-dir "$PREPARED_DATA_DIR"
   --output_dir "$OUTPUT_DIR"
   --model_type bert
-  --model_name_or_path bert-base-uncased
+  --model_name_or_path "$MODEL_NAME_OR_PATH"
   --do_lower_case
   --max_source_seq_length "$MAX_SOURCE_LENGTH"
   --max_target_seq_length "$MAX_TARGET_LENGTH"
