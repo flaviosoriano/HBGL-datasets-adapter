@@ -440,6 +440,8 @@ def resolve_dataset_inputs(args, parser):
     if canonical_mode:
         if not all(value is not None for value in canonical_values):
             parser.error("--dataset-dir, --dataset-name and --fold must be supplied together")
+        if args.export_rankings and args.soft_label_hier_real:
+            parser.error("--export-rankings is not supported with --soft_label_hier_real")
         legacy_values = (args.train_file, args.valid_file, args.test_file, args.add_vocab_file)
         if any(value is not None for value in legacy_values):
             parser.error("canonical dataset mode cannot be mixed with --train_file/--valid_file/--test_file/--add_vocab_file")
@@ -457,11 +459,14 @@ def resolve_dataset_inputs(args, parser):
         args.train_file = str(prepared.path / "train.jsonl")
         args.valid_file = str(prepared.path / "val.jsonl")
         args.test_file = str(prepared.path / "test.jsonl")
+        args.ranking_document_ids_file = str(prepared.path / "test_document_ids.json")
         args.add_vocab_file = str(prepared.path / "label_map.pkl")
         if args.label_cpt is None:
             args.label_cpt = str(prepared.path / "label_taxonomy.tsv")
         logger.info("Using %s canonical fold %d (%s)", args.dataset_name, args.fold, prepared.path)
     else:
+        if args.export_rankings:
+            parser.error("--export-rankings requires canonical dataset mode")
         missing = [
             flag for flag, value in (
                 ("--train_file", args.train_file),
@@ -593,6 +598,10 @@ def get_args():
 
     parser.add_argument('--soft_label', action='store_true')
     parser.add_argument('--soft_label_hier_real', action='store_true')
+    parser.add_argument('--export-rankings', action='store_true',
+                        help="Export and score HGCLR-compatible document-label rankings on the canonical test fold.")
+    parser.add_argument('--ranking-cutoffs', nargs='+', type=int, default=(1, 5, 10),
+                        help="Retrieval cutoffs for --export-rankings.")
 
     parser.add_argument('--one_by_one_label_init_map', type=str, default=None)
     parser.add_argument('--label_cpt', type=str, default=None)
@@ -868,8 +877,30 @@ def test(args, best_macro_f1_path, best_micro_f1_path):
             del flags[flags.index('--do_lower_case')]
         if args.label_cpt_decodewithpos:
             flags.append('--target_no_offset')
+        selector = 'best_micro' if i == 0 else 'best_macro'
+        ranking_path = None
+        if args.export_rankings:
+            ranking_path = os.path.join(args.output_dir, 'rankings', selector + '.rnk')
+            flags.extend([
+                '--ranking_output_file', ranking_path,
+                '--document_ids_file', args.ranking_document_ids_file,
+                '--ranking_cutoffs',
+            ] + [str(cutoff) for cutoff in args.ranking_cutoffs])
 
         out = main(flags)
+        if ranking_path:
+            from evaluate_ranking_artifact import main as evaluate_ranking_artifact
+            ranking_result = evaluate_ranking_artifact([
+                '--ranking-file', ranking_path,
+                '--dataset-dir', args.dataset_dir,
+                '--dataset-name', args.dataset_name,
+                '--fold', str(args.fold),
+                '--prepared-dir', os.path.dirname(args.ranking_document_ids_file),
+                '--output-file', ranking_path + '.metrics.json',
+                '--cutoffs',
+            ] + [str(cutoff) for cutoff in args.ranking_cutoffs])
+            out['ranking_metrics'] = ranking_result['metrics']
+            logger.info('Ranking metrics for %s: %s', selector, ranking_result['metrics'])
         prefix = 'test' + 'micro' if i == 0 else 'macro'
         if args.wandb:
             wandb.log({f'{prefix}/macro_f1': out['macro_f1'], f'{prefix}/micro_f1': out['micro_f1']})

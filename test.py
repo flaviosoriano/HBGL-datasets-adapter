@@ -10,6 +10,7 @@ import glob
 import logging
 import argparse
 import math
+from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 import torch
@@ -21,6 +22,7 @@ from transformers.tokenization_bert import whitespace_tokenize
 import s2s_ft.s2s_loader as seq2seq_loader
 from s2s_ft.utils import load_and_cache_examples
 from transformers import BertTokenizer
+from ranking_eval import aggregate_label_scores, ordered_label_ids
 
 TOKENIZER_CLASSES = {
     'bert': BertTokenizer,
@@ -46,6 +48,32 @@ def detokenize(tk_list):
         else:
             r_list.append(tk)
     return r_list
+
+
+def load_document_ids(path, expected_count):
+    """Load prepared split IDs and verify their one-to-one JSONL alignment."""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError("could not load document ID sidecar: {}".format(path)) from error
+    if payload.get("id_kind") not in {"idx", "text_idx"}:
+        raise ValueError("document ID sidecar has invalid id_kind")
+    if not isinstance(payload.get("ids"), list) or len(payload["ids"]) != expected_count:
+        raise ValueError("document ID sidecar length does not match input JSONL")
+    return payload
+
+
+def source_label_ids(label_map):
+    """Return source label IDs in precisely the added-token order."""
+    source_ids = []
+    for label_name in label_map:
+        token = label_map[label_name]
+        if not isinstance(token, str) or not token.startswith("[A_") or not token.endswith("]"):
+            raise ValueError("label map token is not a canonical [A_<id>] token: {!r}".format(token))
+        source_ids.append(int(token[3:-1]))
+    if len(source_ids) != len(set(source_ids)):
+        raise ValueError("label map source IDs must be unique")
+    return source_ids
 
 
 def ascii_print(text):
@@ -120,6 +148,12 @@ def main(flags=None):
     parser.add_argument('--softmax_label_only', action='store_true')
     parser.add_argument('--soft_label', action='store_true')
     parser.add_argument('--soft_label_hier_real_with_train_file', default=None, type=str)
+    parser.add_argument("--ranking_output_file", type=str, default=None,
+                        help="Optional pickle artifact: text_<document-id> -> top label scores.")
+    parser.add_argument("--document_ids_file", type=str, default=None,
+                        help="Prepared <split>_document_ids.json aligned with input_file.")
+    parser.add_argument("--ranking_cutoffs", nargs="+", type=int, default=[1, 5, 10],
+                        help="Positive retrieval cutoffs; stores scores through max(cutoffs).")
 
     if flags:
         print(flags)
@@ -130,6 +164,16 @@ def main(flags=None):
 
     if args.max_tgt_length >= args.max_seq_length - 2:
         raise ValueError("Maximum tgt length exceeds max seq length - 2.")
+    ranking_enabled = bool(args.ranking_output_file or args.document_ids_file)
+    if bool(args.ranking_output_file) != bool(args.document_ids_file):
+        raise ValueError("ranking export requires both --ranking_output_file and --document_ids_file")
+    if ranking_enabled:
+        if args.beam_size != 1 or not args.soft_label or args.soft_label_hier_real_with_train_file:
+            raise ValueError("ranking export requires non-hierarchical --soft_label with --beam_size 1")
+        if not args.add_vocab_file:
+            raise ValueError("ranking export requires --add_vocab_file")
+        if any(cutoff <= 0 for cutoff in args.ranking_cutoffs):
+            raise ValueError("ranking cutoffs must be positive")
 
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu")
@@ -162,6 +206,7 @@ def main(flags=None):
         # tokenizer.add_special_tokens({'additional_special_tokens': [label_map[label] for label in labels_key]})
         tokenizer.add_tokens([label_map[label] for label in labels_key])
         add_token_num = len(labels_key)
+        ranking_label_ids = source_label_ids(label_map) if ranking_enabled else None
 
     if args.model_type == "roberta":
         vocab = tokenizer.encoder
@@ -269,17 +314,26 @@ def main(flags=None):
                 args.input_file, tokenizer, local_rank=-1,
                 cached_features_file=args.cached_features_file, shuffle=False, eval_mode=True)
 
+        document_ids = None
+        if ranking_enabled:
+            document_ids = load_document_ids(args.document_ids_file, num_lines)
         input_lines = []
         for line in to_pred:
             input_lines.append(tokenizer.convert_ids_to_tokens(line.source_ids)[:max_src_length])
         if args.subset > 0:
             logger.info("Decoding subset: %d", args.subset)
             input_lines = input_lines[:args.subset]
+            if ranking_enabled:
+                document_ids["ids"] = document_ids["ids"][:args.subset]
+        if ranking_enabled and len(document_ids["ids"]) != len(input_lines):
+            raise ValueError("document ID sidecar does not align with decoded input")
 
         input_lines = sorted(list(enumerate(input_lines)),
                              key=lambda x: -len(x[1]))
         output_lines = [""] * len(input_lines)
+        ranking = {} if ranking_enabled else None
         score_trace_list = [None] * len(input_lines)
+        ranking_depth = max(args.ranking_cutoffs) if ranking_enabled else 0
         total_batch = math.ceil(len(input_lines) / args.batch_size)
 
         with tqdm(total=total_batch) as pbar:
@@ -302,9 +356,13 @@ def main(flags=None):
                     batch = [
                         t.to(device) if t is not None else None for t in batch]
                     input_ids, token_type_ids, position_ids, input_mask, mask_qkv, task_idx = batch
-                    traces = model(input_ids, token_type_ids,
-                                   position_ids, input_mask, task_idx=task_idx, mask_qkv=mask_qkv)
-                    if args.beam_size > 1:
+                    traces = model(
+                        input_ids, token_type_ids, position_ids, input_mask,
+                        task_idx=task_idx, mask_qkv=mask_qkv, return_label_logits=ranking_enabled)
+                    if ranking_enabled:
+                        output_ids = traces['pred_seq'].tolist()
+                        batch_label_logits = traces['label_logits'].cpu().tolist()
+                    elif args.beam_size > 1:
                         traces = {k: v.tolist() for k, v in traces.items()}
                         output_ids = traces['pred_seq']
                     else:
@@ -324,6 +382,16 @@ def main(flags=None):
                         if '\n' in output_sequence:
                             output_sequence = " [X_SEP] ".join(output_sequence.split('\n'))
                         output_lines[buf_id[i]] = output_sequence
+                        if ranking_enabled:
+                            document_key = "text_{}".format(document_ids["ids"][buf_id[i]])
+                            if document_key in ranking:
+                                raise ValueError("duplicate external document ID in ranking: {}".format(document_key))
+                            dense_scores = aggregate_label_scores(ranking_label_ids, batch_label_logits[i])
+                            top_label_ids = ordered_label_ids(dense_scores)[:ranking_depth]
+                            ranking[document_key] = {
+                                "label_{}".format(label_id): dense_scores["label_{}".format(label_id)]
+                                for label_id in top_label_ids
+                            }
                         if first_batch or batch_count % 50 == 0:
                             logger.info("{} = {}".format(buf_id[i], output_sequence))
                 pbar.update(1)
@@ -336,6 +404,23 @@ def main(flags=None):
             for l in output_lines:
                 fout.write(l)
                 fout.write("\n")
+        if ranking_enabled:
+            if len(ranking) != len(document_ids["ids"]):
+                raise RuntimeError("ranking coverage does not match decoded document IDs")
+            ranking_path = Path(args.ranking_output_file)
+            ranking_path.parent.mkdir(parents=True, exist_ok=True)
+            with ranking_path.open("wb") as handle:
+                pickle.dump(ranking, handle, protocol=4)
+            metadata_path = ranking_path.with_suffix(ranking_path.suffix + ".metadata.json")
+            metadata_path.write_text(json.dumps({
+                "artifact_version": 1,
+                "document_id_kind": document_ids["id_kind"],
+                "documents": len(ranking),
+                "ranking_depth": ranking_depth,
+                "score_aggregation": "maximum raw soft-label logit across decoder steps",
+                "cutoffs": args.ranking_cutoffs,
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            logger.info("Wrote ranking artifact for %d documents to %s", len(ranking), ranking_path)
 
         import pickle
         from eval import evaluate

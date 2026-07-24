@@ -7,6 +7,7 @@ fold, so feature caches and targets cannot be accidentally reused across folds.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-ARTIFACT_VERSION = 2
+ARTIFACT_VERSION = 4
 REQUIRED_SPLITS = ("train", "val", "test")
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RCV1_TAXONOMY = REPO_ROOT / "data" / "rcv1" / "rcv1.taxonomy"
@@ -345,6 +346,50 @@ def sanitize_text(value: str) -> str:
     )
 
 
+def build_split_document_ids(
+    samples: list[dict[str, Any]], indices: Iterable[int], dataset_name: str
+) -> dict[str, Any]:
+    """Return evaluation IDs aligned to a prepared split without reindexing samples.
+
+    Canonical folds always contain positional ``idx`` values. RCV1 ranking
+    metadata is keyed by the external ``text_idx`` instead, so this mapping is
+    deliberately a sidecar rather than an indexing mechanism.
+    """
+    if dataset_name == "RCV1-103-H3":
+        id_kind = "text_idx"
+    elif dataset_name == "WOS-150-H2":
+        id_kind = "idx"
+    else:
+        raise DatasetValidationError(f"unsupported dataset name: {dataset_name!r}")
+
+    document_ids: list[int] = []
+    for index in indices:
+        sample = samples[index]
+        try:
+            document_id = sample[id_kind]
+        except KeyError as error:
+            raise DatasetValidationError(
+                f"{dataset_name} sample idx={index} lacks required evaluation ID {id_kind!r}"
+            ) from error
+        if not isinstance(document_id, int):
+            raise DatasetValidationError(
+                f"{dataset_name} sample idx={index} has non-integer {id_kind}={document_id!r}"
+            )
+        document_ids.append(document_id)
+    return {"id_kind": id_kind, "ids": document_ids}
+
+
+def build_corpus_label_counts(samples: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """Count source label IDs across the immutable canonical corpus."""
+    counts: Counter[int] = Counter()
+    for sample in samples:
+        labels = sample.get("labels_ids")
+        if not isinstance(labels, list) or not all(isinstance(label_id, int) for label_id in labels):
+            raise DatasetValidationError("sample has invalid labels_ids while building corpus counts")
+        counts.update(labels)
+    return {str(label_id): count for label_id, count in sorted(counts.items())}
+
+
 def _sample_labels(sample: dict[str, Any], id_to_label: dict[int, str]) -> list[tuple[int, str]]:
     pairs: list[tuple[int, str]] = []
     seen: set[int] = set()
@@ -441,6 +486,14 @@ def prepare_fold(
                 temporary / f"{split}.jsonl",
                 _make_rows(samples, split_ids[split], split, id_to_label, label_map, depths),
             )
+            (temporary / f"{split}_document_ids.json").write_text(
+                json.dumps(build_split_document_ids(samples, split_ids[split], dataset_name), sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        (temporary / "corpus_label_counts.json").write_text(
+            json.dumps({"documents": len(samples), "label_counts": build_corpus_label_counts(samples)}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         with (temporary / "label_map.pkl").open("wb") as handle:
             pickle.dump(label_map, handle, protocol=4)
         _write_taxonomy(temporary / "label_taxonomy.tsv", taxonomy)

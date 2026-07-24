@@ -76,3 +76,51 @@ which makes checkpoints reproducible across folds.
 
 Prepared artifacts include a manifest. If the source data changes, regenerate
 with `--force-prepare`; the adapter will not silently reuse incompatible cache.
+
+### Direct HGCLR × HBGL ranking evaluation
+
+The canonical adapter now writes `<split>_document_ids.json` beside each JSONL.
+It preserves the positional `idx` for WOS and the external `text_idx` for RCV1;
+it never uses `text_idx` to index `samples.pkl`.
+
+`run_fold.sh` exports rankings by default (`EXPORT_RANKINGS=1`) for the best
+micro-F1 and macro-F1 checkpoints. Each artifact is an HGCLR-compatible pickle:
+
+```python
+{"text_<external-document-id>": {"label_<source-label-id>": raw_score}}
+```
+
+For each document, HBGL retains the maximum raw soft-label decoder logit over
+all decoding steps, then writes the top 10 labels. It also writes a metadata
+file and metrics JSON next to each `.rnk` under:
+
+```text
+models/<RUN_NAME>/rankings/best_micro.rnk
+models/<RUN_NAME>/rankings/best_micro.rnk.metrics.json
+models/<RUN_NAME>/rankings/best_macro.rnk
+models/<RUN_NAME>/rankings/best_macro.rnk.metrics.json
+```
+
+The metrics use canonical `relevance_map.pkl`, the same test fold, and global
+label frequencies from the full canonical corpus. They report `precision@K`,
+`ndcg@K`, `psprecision@K`, and `psnDCG@K` for `K = 1, 5, 10`. The evaluator can
+score either an HGCLR or HBGL ranking artifact with the identical protocol:
+
+```shell
+python3 evaluate_ranking_artifact.py \
+  --ranking-file path/to/model.rnk \
+  --dataset-dir ../datasets/RCV1-103-H3 \
+  --dataset-name RCV1-103-H3 \
+  --fold 0 \
+  --prepared-dir resource/prepared-datasets/RCV1-103-H3/fold_0 \
+  --output-file results.json \
+  --cutoffs 1 5 10
+```
+
+Set `EXPORT_RANKINGS=0` only when a ranking artifact is intentionally not
+needed. `FORCE_PREPARE=1` is the runner default so an existing prepared fold is
+upgraded with the identity and corpus-statistics sidecars before ranking starts;
+set it to `0` only after a verified compatible preparation. Ranking export
+requires standard non-hierarchical `--soft_label` greedy decoding; it deliberately
+refuses beam and hierarchical soft-label modes rather than silently producing
+incomparable scores.

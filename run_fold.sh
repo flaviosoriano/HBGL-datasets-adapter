@@ -18,6 +18,8 @@ OUTPUT_DIR=${OUTPUT_DIR:-"${SCRIPT_DIR}/models/${RUN_NAME}"}
 CACHE_DIR=${CACHE_DIR:-"${SCRIPT_DIR}/.cache/${DATASET}/fold_${FOLD}"}
 PER_GPU_TRAIN_BATCH_SIZE=${PER_GPU_TRAIN_BATCH_SIZE:-12}
 MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:-bert-base-uncased}
+EXPORT_RANKINGS=${EXPORT_RANKINGS:-1}
+FORCE_PREPARE=${FORCE_PREPARE:-1}
 # Transformers 2.x resolves the shortcut through a retired S3 URL. Prefer the
 # Hub-staged local checkpoint when this RunPod layout is available.
 LOCAL_BERT_DIR=/workspace/flaviossf/pretrained/bert-base-uncased
@@ -77,7 +79,16 @@ COMMAND=(
   --label_cpt_steps "$LABEL_CPT_STEPS"
   --label_cpt_use_bce
 )
+if [[ "$FORCE_PREPARE" == "1" ]]; then
+  COMMAND+=(--force-prepare)
+elif [[ "$FORCE_PREPARE" != "0" ]]; then
+  echo "FORCE_PREPARE must be 0 or 1" >&2
+  exit 2
+fi
 COMMAND+=("${EXTRA_LABEL_FLAGS[@]}")
+if [[ "$EXPORT_RANKINGS" == "1" ]]; then
+  COMMAND+=(--export-rankings --ranking-cutoffs 1 5 10)
+fi
 if [[ "${HBGL_WANDB:-0}" == "1" ]]; then
   COMMAND+=(--wandb)
 fi
