@@ -20,6 +20,8 @@ PER_GPU_TRAIN_BATCH_SIZE=${PER_GPU_TRAIN_BATCH_SIZE:-12}
 MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:-bert-base-uncased}
 EXPORT_RANKINGS=${EXPORT_RANKINGS:-1}
 FORCE_PREPARE=${FORCE_PREPARE:-0}
+NUM_TRAINING_STEPS=${NUM_TRAINING_STEPS:-96000}
+SAVE_STEPS=${SAVE_STEPS:-3000}
 # Transformers 2.x resolves the shortcut through a retired S3 URL. Prefer the
 # Hub-staged local checkpoint when this RunPod layout is available.
 LOCAL_BERT_DIR=/workspace/flaviossf/pretrained/bert-base-uncased
@@ -68,9 +70,9 @@ COMMAND=(
   --label_smoothing 0
   --learning_rate 3e-5
   --num_warmup_steps 500
-  --num_training_steps 96000
+  --num_training_steps "$NUM_TRAINING_STEPS"
   --cache_dir "$CACHE_DIR"
-  --save_steps 3000
+  --save_steps "$SAVE_STEPS"
   --random_prob 0
   --keep_prob 0
   --soft_label

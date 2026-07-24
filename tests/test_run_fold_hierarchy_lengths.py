@@ -42,6 +42,11 @@ class RunFoldHierarchyLengthTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "test.py").read_text(encoding="utf-8")
         self.assertIn("tokenizer.convert_tokens_to_ids(token.lower())", source)
 
+    def test_fold_runner_allows_bounded_training_and_checkpoint_interval(self):
+        source = (Path(__file__).resolve().parents[1] / "run_fold.sh").read_text(encoding="utf-8")
+        self.assertIn("NUM_TRAINING_STEPS=${NUM_TRAINING_STEPS:-96000}", source)
+        self.assertIn("SAVE_STEPS=${SAVE_STEPS:-3000}", source)
+
 
 if __name__ == "__main__":
     unittest.main()
