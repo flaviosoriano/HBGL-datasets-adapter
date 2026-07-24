@@ -12,7 +12,7 @@ HBGL_ENV="$CONDA_DIR/envs/hbgl"
 REPO_DIR="$ROOT/HBGL"
 DATASETS_DIR="$ROOT/datasets"
 HBGL_REPO=https://github.com/flaviosoriano/HBGL-datasets-adapter.git
-HBGL_REVISION=1992a161ef6034c40dbdaf8f4c7e3fb73d769425
+HBGL_REVISION=e8712ca2872aba7e5be64554fa263240c877af5b
 MINICONDA_NAME=Miniconda3-py38_23.11.0-2-Linux-x86_64.sh
 MINICONDA_URL="https://repo.anaconda.com/miniconda/$MINICONDA_NAME"
 MINICONDA_SHA256=cb908ddbd603d789d94076ea4dd3f8517b15866719e007725dca778a8dfab823
@@ -74,6 +74,22 @@ git -C "$REPO_DIR" fetch --depth 1 origin "$HBGL_REVISION"
 git -C "$REPO_DIR" checkout --detach "$HBGL_REVISION"
 [[ "$(git -C "$REPO_DIR" rev-parse HEAD)" == "$HBGL_REVISION" ]]
 
+# Transformers 2.x uses retired S3 shortcuts for BERT. Stage the public model
+# on the persistent disk so both the legacy runner and smoke runners use a file path.
+PRETRAINED_DIR="$ROOT/pretrained/bert-base-uncased"
+if [[ ! -f "$PRETRAINED_DIR/config.json" || ! -f "$PRETRAINED_DIR/pytorch_model.bin" || ! -f "$PRETRAINED_DIR/vocab.txt" ]]; then
+    PRETRAINED_DIR="$PRETRAINED_DIR" "$CONDA_DIR/bin/conda" run --no-capture-output --prefix "$HBGL_ENV" python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="bert-base-uncased",
+    local_dir=os.environ["PRETRAINED_DIR"],
+    local_dir_use_symlinks=False,
+    allow_patterns=["config.json", "pytorch_model.bin", "vocab.txt"],
+)
+PY
+fi
+
 "$CONDA_DIR/bin/conda" run --prefix "$HBGL_ENV" python - <<'PY'
 import torch
 import transformers
@@ -107,11 +123,11 @@ chmod 600 "$ROOT/hbgl-runtime.env"
 # Each fold Pod stages its own canonical datasets below DATASETS_DIR, then launches
 # from its own tmux session, e.g.:
 # source /workspace/flaviossf/hbgl-runtime.env
-# tmux new-session -A -s hbgl
+# tmux new-session -A -s HGBL
 # /workspace/flaviossf/miniconda3/bin/conda run -p "$HBGL_ENV" \
 #   bash "$REPO_DIR/run_fold.sh" RCV1-103-H3 0 hbgl-rcv1-fold-0
 mkdir -p "$DATASETS_DIR"
-tmux has-session -t hbgl 2>/dev/null || tmux new-session -d -s hbgl
+tmux has-session -t HGBL 2>/dev/null || tmux new-session -d -s HGBL
 printf 'HBGL legacy runtime is ready at %s; revision=%s; datasets=%s\n' \
     "$REPO_DIR" "$HBGL_REVISION" "$DATASETS_DIR"
 exec sleep infinity
