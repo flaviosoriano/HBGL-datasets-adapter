@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-ARTIFACT_VERSION = 1
+ARTIFACT_VERSION = 2
 REQUIRED_SPLITS = ("train", "val", "test")
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RCV1_TAXONOMY = REPO_ROOT / "data" / "rcv1" / "rcv1.taxonomy"
@@ -372,7 +372,9 @@ def _make_rows(
         labels = _sample_labels(sample, id_to_label)
         labels.sort(key=lambda pair: (depths[pair[1]], pair[0]))
         tokens = [label_map[label] for _, label in labels]
-        row: dict[str, Any] = {"src": sanitize_text(sample["text"]).split()}
+        # HBGL's tokenizer receives ``src`` directly and requires text, not a
+        # pre-tokenized JSON list.  Preserve whitespace normalization here.
+        row: dict[str, Any] = {"src": " ".join(sanitize_text(sample["text"]).split())}
         if split == "train":
             target = [[] for _ in range(max_depth + 1)]
             for (_, label), token in zip(labels, tokens):

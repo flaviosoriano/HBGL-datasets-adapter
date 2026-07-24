@@ -81,6 +81,7 @@ printf 'run_id=%s\ndataset=%s\nfold=%s\nbatch_size=%s\ntraining_steps=%s\nrepo_c
     --dataset-name "$DATASET" \
     --fold "$FOLD" \
     --prepared-data-dir "$PREPARED_DATA_DIR" \
+    --force-prepare \
     --output_dir "$OUTPUT_DIR" \
     --model_type bert \
     --model_name_or_path "$PRETRAINED_DIR" \
