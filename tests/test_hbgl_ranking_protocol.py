@@ -1,7 +1,11 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from hbgl_ranking import (
     build_document_label_scores,
+    hierarchy_levels_from_training_file,
     evaluate_hbgl_hgclr_metrics,
     label_ids_by_depth_from_taxonomy,
 )
@@ -27,6 +31,19 @@ class PaperAlignedScoreTests(unittest.TestCase):
             "Root\tA\tB\nA\tC\n",
         )
         self.assertEqual(levels, [[10, 11], [20]])
+
+    def test_reads_hierarchy_levels_from_training_targets(self):
+        rows = [
+            {"tgt": [["[A_10]"], ["[A_20]", "[A_21]"]]},
+            {"tgt": [["[A_11]"], ["[A_20]"]]},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "train.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            self.assertEqual(
+                hierarchy_levels_from_training_file(path),
+                [{"[A_10]", "[A_11]"}, {"[A_20]", "[A_21]"}],
+            )
 
 
 class HgclrProtocolTests(unittest.TestCase):

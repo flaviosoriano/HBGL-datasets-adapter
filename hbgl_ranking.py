@@ -8,6 +8,7 @@ published project protocol and output names.
 
 from __future__ import annotations
 
+import json
 import math
 from collections import deque
 
@@ -70,6 +71,35 @@ def label_ids_by_depth_from_taxonomy(label_map, taxonomy_text):
         if depth not in by_depth:
             raise ValueError("taxonomy has no exported labels at depth {}".format(depth))
         levels.append(sorted(by_depth[depth]))
+    return levels
+
+
+def hierarchy_levels_from_training_file(training_file):
+    """Read the ordered hierarchical label sets used by HBGL soft-label training.
+
+    Training reserves one additional target slot for EOS/SEP.  Decoding with
+    ``soft_label_hier_real`` must instead stop after these label levels, before
+    it attempts to index a nonexistent hierarchy mask.
+    """
+    levels = None
+    with open(training_file, encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            try:
+                target = json.loads(line)["tgt"]
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError("invalid training target at line {}".format(line_number)) from error
+            if not isinstance(target, list) or not target:
+                raise ValueError("training target at line {} has no hierarchy levels".format(line_number))
+            if levels is None:
+                levels = [set() for _ in target]
+            elif len(target) != len(levels):
+                raise ValueError("training targets have inconsistent hierarchy depths")
+            for depth, labels in enumerate(target):
+                if not isinstance(labels, list) or not labels or not all(isinstance(label, str) for label in labels):
+                    raise ValueError("training target at line {} has invalid labels at depth {}".format(line_number, depth))
+                levels[depth].update(labels)
+    if levels is None:
+        raise ValueError("training file has no targets")
     return levels
 
 

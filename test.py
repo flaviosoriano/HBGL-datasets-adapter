@@ -22,7 +22,11 @@ from transformers.tokenization_bert import whitespace_tokenize
 import s2s_ft.s2s_loader as seq2seq_loader
 from s2s_ft.utils import load_and_cache_examples
 from transformers import BertTokenizer
-from hbgl_ranking import build_document_label_scores, label_ids_by_depth_from_taxonomy
+from hbgl_ranking import (
+    build_document_label_scores,
+    hierarchy_levels_from_training_file,
+    label_ids_by_depth_from_taxonomy,
+)
 
 TOKENIZER_CLASSES = {
     'bert': BertTokenizer,
@@ -276,6 +280,16 @@ def main(flags=None):
                 tokenizer, label_map, args.label_taxonomy_file
             )
 
+    hierarchy_levels = None
+    if args.soft_label_hier_real_with_train_file:
+        hierarchy_levels = hierarchy_levels_from_training_file(
+            args.soft_label_hier_real_with_train_file
+        )
+        # Training reserves one target position for EOS/SEP.  Hierarchical
+        # decoding must stop after the actual label levels before the decoder
+        # indexes ``model.hier_labels`` beyond its final level.
+        args.max_tgt_length = len(hierarchy_levels)
+
     if args.model_type == "roberta":
         vocab = tokenizer.encoder
     elif args.model_type == "xlm-roberta":
@@ -340,14 +354,11 @@ def main(flags=None):
             model.label_start_index = label_tokens_start_index
 
             if args.soft_label_hier_real_with_train_file:
-                hier_labels = None
-                for line in open(args.soft_label_hier_real_with_train_file):
-                    if hier_labels:
-                        for i, l in enumerate(json.loads(line)['tgt']):
-                            hier_labels[i] |=  set(l)
-                    else:
-                        hier_labels = [set(i) for i in json.loads(line)['tgt']]
-                hier_labels = [tokenizer.convert_tokens_to_ids(list([j.lower() for j in i])) for i in hier_labels]
+                assert hierarchy_levels is not None
+                hier_labels = [
+                    tokenizer.convert_tokens_to_ids([label.lower() for label in labels])
+                    for labels in hierarchy_levels
+                ]
 
                 def to_multi_hot(label):
                     _label = torch.zeros(model.config.vocab_size)

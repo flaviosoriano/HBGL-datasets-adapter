@@ -88,7 +88,7 @@ printf 'run_id=%s\ndataset=%s\nfold=%s\nbatch_size=%s\ntraining_steps=%s\nrepo_c
     --model_name_or_path "$PRETRAINED_DIR" \
     --do_lower_case \
     --max_source_seq_length 509 \
-    --max_target_seq_length 2 \
+    --max_target_seq_length 3 \
     --per_gpu_train_batch_size "$BATCH_SIZE" \
     --gradient_accumulation_steps 1 \
     --label_smoothing 0 \

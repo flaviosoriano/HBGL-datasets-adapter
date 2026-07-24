@@ -21,18 +21,22 @@ class RunFoldHierarchyLengthTests(unittest.TestCase):
                 self.fail("missing target length: {}".format(dataset))
             return int(match.group(1))
 
-        # WOS-150-H2 has taxonomy depths 0,1; RCV1-103-H3 has 0,1,2,3.
-        # The hierarchical decoder indexes `hier_labels[len(output_ids)]`, so
-        # max target length must be exactly the number of hierarchy levels.
-        self.assertEqual(configured_length("WOS-150-H2"), 2)
-        self.assertEqual(configured_length("RCV1-103-H3"), 4)
+        # Training includes one EOS/SEP target after the hierarchy levels.
+        # WOS-150-H2 has levels 0,1; RCV1-103-H3 has levels 0,1,2,3.
+        self.assertEqual(configured_length("WOS-150-H2"), 3)
+        self.assertEqual(configured_length("RCV1-103-H3"), 5)
 
     def test_smoke_runners_use_their_canonical_hierarchy_lengths(self):
         repo = Path(__file__).resolve().parents[1]
         wos = (repo / "deploy/runpod/run-wos-fold0-vram-smoke.sh").read_text(encoding="utf-8")
         rcv1 = (repo / "deploy/runpod/run-rcv1-fold0-vram-smoke.sh").read_text(encoding="utf-8")
-        self.assertIn("--max_target_seq_length 2", wos)
-        self.assertIn("--max_target_seq_length 4", rcv1)
+        self.assertIn("--max_target_seq_length 3", wos)
+        self.assertIn("--max_target_seq_length 5", rcv1)
+
+    def test_hierarchical_test_runner_caps_decoding_before_eos_slot(self):
+        source = (Path(__file__).resolve().parents[1] / "test.py").read_text(encoding="utf-8")
+        self.assertIn("hierarchy_levels_from_training_file", source)
+        self.assertIn("args.max_tgt_length = len(hierarchy_levels)", source)
 
 
 if __name__ == "__main__":
