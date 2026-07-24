@@ -22,7 +22,7 @@ from transformers.tokenization_bert import whitespace_tokenize
 import s2s_ft.s2s_loader as seq2seq_loader
 from s2s_ft.utils import load_and_cache_examples
 from transformers import BertTokenizer
-from ranking_eval import aggregate_label_scores, ordered_label_ids
+from hbgl_ranking import build_document_label_scores, label_ids_by_depth_from_taxonomy
 
 TOKENIZER_CLASSES = {
     'bert': BertTokenizer,
@@ -63,17 +63,76 @@ def load_document_ids(path, expected_count):
     return payload
 
 
-def source_label_ids(label_map):
-    """Return source label IDs in precisely the added-token order."""
-    source_ids = []
-    for label_name in label_map:
-        token = label_map[label_name]
-        if not isinstance(token, str) or not token.startswith("[A_") or not token.endswith("]"):
-            raise ValueError("label map token is not a canonical [A_<id>] token: {!r}".format(token))
-        source_ids.append(int(token[3:-1]))
-    if len(source_ids) != len(set(source_ids)):
-        raise ValueError("label map source IDs must be unique")
-    return source_ids
+def hierarchy_token_ids_by_depth(tokenizer, label_map, taxonomy_path):
+    """Translate canonical source-label depths to the tokenizer IDs used by HBGL."""
+    levels = label_ids_by_depth_from_taxonomy(
+        label_map, Path(taxonomy_path).read_text(encoding="utf-8")
+    )
+    source_to_token = {}
+    for token in label_map.values():
+        source_id = int(token[3:-1])
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        if not isinstance(token_id, int) or token_id < 0:
+            raise ValueError("tokenizer cannot resolve canonical label token {}".format(token))
+        source_to_token[source_id] = token_id
+    return (
+        levels,
+        [[source_to_token[label_id] for label_id in level] for level in levels],
+        {token_id: source_id for source_id, token_id in source_to_token.items()},
+    )
+
+
+class HierarchyScoreCapture(object):
+    """External test-time hook for Eq.-10 vectors; it never mutates HBGL."""
+
+    def __init__(self, classifier, hier_labels):
+        self._vectors = []
+        self._hier_labels = hier_labels
+        self._handle = classifier.register_forward_hook(self._capture)
+
+    def _capture(self, _module, _inputs, output):
+        self._vectors.append(output[0].detach())
+
+    def begin_batch(self):
+        self._vectors = []
+
+    def scores(self, expected_level_token_ids, source_id_by_token):
+        if len(self._vectors) != len(self._hier_labels):
+            raise RuntimeError(
+                "HBGL emitted {} score vectors for {} hierarchy levels".format(
+                    len(self._vectors), len(self._hier_labels)
+                )
+            )
+        if len(expected_level_token_ids) != len(self._hier_labels):
+            raise RuntimeError("prepared taxonomy and HBGL hierarchy have different depths")
+        level_label_ids = []
+        probabilities_by_level = []
+        batch_size = None
+        for level, raw_scores in enumerate(self._vectors):
+            token_ids = torch.nonzero(self._hier_labels[level], as_tuple=True)[0].tolist()
+            if set(token_ids) != set(expected_level_token_ids[level]):
+                raise RuntimeError("prepared taxonomy does not match HBGL hierarchy mask at level {}".format(level))
+            try:
+                level_label_ids.append([source_id_by_token[token_id] for token_id in token_ids])
+            except KeyError as error:
+                raise RuntimeError("HBGL hierarchy mask includes a non-canonical token") from error
+            if raw_scores.dim() != 3 or raw_scores.shape[1] != 1:
+                raise RuntimeError("unexpected HBGL classifier score shape")
+            if batch_size is None:
+                batch_size = raw_scores.shape[0]
+            elif batch_size != raw_scores.shape[0]:
+                raise RuntimeError("HBGL score vectors have inconsistent batch sizes")
+            probabilities_by_level.append(torch.sigmoid(raw_scores[:, 0, token_ids]).cpu().tolist())
+        return [
+            build_document_label_scores(
+                level_label_ids,
+                [probabilities[document_index] for probabilities in probabilities_by_level],
+            )
+            for document_index in range(batch_size)
+        ]
+
+    def close(self):
+        self._handle.remove()
 
 
 def ascii_print(text):
@@ -149,11 +208,13 @@ def main(flags=None):
     parser.add_argument('--soft_label', action='store_true')
     parser.add_argument('--soft_label_hier_real_with_train_file', default=None, type=str)
     parser.add_argument("--ranking_output_file", type=str, default=None,
-                        help="Optional pickle artifact: text_<document-id> -> top label scores.")
+                        help="Optional HBGL-only dense ranking artifact using paper Eq.-10 probabilities.")
     parser.add_argument("--document_ids_file", type=str, default=None,
                         help="Prepared <split>_document_ids.json aligned with input_file.")
-    parser.add_argument("--ranking_cutoffs", nargs="+", type=int, default=[1, 5, 10],
-                        help="Positive retrieval cutoffs; stores scores through max(cutoffs).")
+    parser.add_argument("--label_taxonomy_file", type=str, default=None,
+                        help="Prepared label_taxonomy.tsv used to associate labels with decoder levels.")
+    parser.add_argument("--ranking_thresholds", nargs="+", type=int, default=[1, 5, 10],
+                        help="Positive HGCLR-compatible cutoffs recorded in ranking metadata.")
 
     if flags:
         print(flags)
@@ -164,20 +225,22 @@ def main(flags=None):
 
     if args.max_tgt_length >= args.max_seq_length - 2:
         raise ValueError("Maximum tgt length exceeds max seq length - 2.")
-    ranking_enabled = bool(args.ranking_output_file or args.document_ids_file)
-    if bool(args.ranking_output_file) != bool(args.document_ids_file):
-        raise ValueError("ranking export requires both --ranking_output_file and --document_ids_file")
+    ranking_enabled = bool(args.ranking_output_file or args.document_ids_file or args.label_taxonomy_file)
+    if not (bool(args.ranking_output_file) == bool(args.document_ids_file) == bool(args.label_taxonomy_file)):
+        raise ValueError("HBGL ranking export requires output, document IDs, and taxonomy files")
     if ranking_enabled:
-        if args.beam_size != 1 or not args.soft_label or args.soft_label_hier_real_with_train_file:
-            raise ValueError("ranking export requires non-hierarchical --soft_label with --beam_size 1")
+        if args.beam_size != 1 or not args.soft_label or not args.soft_label_hier_real_with_train_file:
+            raise ValueError("HBGL ranking export requires greedy hierarchical --soft_label decoding")
         if not args.add_vocab_file:
-            raise ValueError("ranking export requires --add_vocab_file")
-        if any(cutoff <= 0 for cutoff in args.ranking_cutoffs):
-            raise ValueError("ranking cutoffs must be positive")
+            raise ValueError("HBGL ranking export requires --add_vocab_file")
+        if any(cutoff <= 0 for cutoff in args.ranking_thresholds):
+            raise ValueError("ranking thresholds must be positive")
 
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu")
     n_gpu = torch.cuda.device_count()
+    if ranking_enabled and n_gpu > 1:
+        raise ValueError("HBGL ranking export currently requires one GPU so classifier hook order is unambiguous")
 
     if args.seed > 0:
         random.seed(args.seed)
@@ -206,7 +269,12 @@ def main(flags=None):
         # tokenizer.add_special_tokens({'additional_special_tokens': [label_map[label] for label in labels_key]})
         tokenizer.add_tokens([label_map[label] for label in labels_key])
         add_token_num = len(labels_key)
-        ranking_label_ids = source_label_ids(label_map) if ranking_enabled else None
+        ranking_level_token_ids = None
+        ranking_source_id_by_token = None
+        if ranking_enabled:
+            _ranking_level_label_ids, ranking_level_token_ids, ranking_source_id_by_token = hierarchy_token_ids_by_depth(
+                tokenizer, label_map, args.label_taxonomy_file
+            )
 
     if args.model_type == "roberta":
         vocab = tokenizer.encoder
@@ -298,6 +366,8 @@ def main(flags=None):
 
         torch.cuda.empty_cache()
         model.eval()
+        base_model = model.module if hasattr(model, 'module') else model
+        score_capture = HierarchyScoreCapture(base_model.cls, base_model.hier_labels) if ranking_enabled else None
         next_i = 0
         max_src_length = args.max_seq_length - 2 - args.max_tgt_length
         if args.pos_shift:
@@ -332,8 +402,6 @@ def main(flags=None):
                              key=lambda x: -len(x[1]))
         output_lines = [""] * len(input_lines)
         ranking = {} if ranking_enabled else None
-        score_trace_list = [None] * len(input_lines)
-        ranking_depth = max(args.ranking_cutoffs) if ranking_enabled else 0
         total_batch = math.ceil(len(input_lines) / args.batch_size)
 
         with tqdm(total=total_batch) as pbar:
@@ -356,12 +424,16 @@ def main(flags=None):
                     batch = [
                         t.to(device) if t is not None else None for t in batch]
                     input_ids, token_type_ids, position_ids, input_mask, mask_qkv, task_idx = batch
+                    if ranking_enabled:
+                        score_capture.begin_batch()
                     traces = model(
                         input_ids, token_type_ids, position_ids, input_mask,
-                        task_idx=task_idx, mask_qkv=mask_qkv, return_label_logits=ranking_enabled)
+                        task_idx=task_idx, mask_qkv=mask_qkv)
                     if ranking_enabled:
-                        output_ids = traces['pred_seq'].tolist()
-                        batch_label_logits = traces['label_logits'].cpu().tolist()
+                        output_ids = traces.tolist()
+                        batch_dense_scores = score_capture.scores(
+                            ranking_level_token_ids, ranking_source_id_by_token
+                        )
                     elif args.beam_size > 1:
                         traces = {k: v.tolist() for k, v in traces.items()}
                         output_ids = traces['pred_seq']
@@ -386,12 +458,7 @@ def main(flags=None):
                             document_key = "text_{}".format(document_ids["ids"][buf_id[i]])
                             if document_key in ranking:
                                 raise ValueError("duplicate external document ID in ranking: {}".format(document_key))
-                            dense_scores = aggregate_label_scores(ranking_label_ids, batch_label_logits[i])
-                            top_label_ids = ordered_label_ids(dense_scores)[:ranking_depth]
-                            ranking[document_key] = {
-                                "label_{}".format(label_id): dense_scores["label_{}".format(label_id)]
-                                for label_id in top_label_ids
-                            }
+                            ranking[document_key] = batch_dense_scores[i]
                         if first_batch or batch_count % 50 == 0:
                             logger.info("{} = {}".format(buf_id[i], output_sequence))
                 pbar.update(1)
@@ -413,13 +480,14 @@ def main(flags=None):
                 pickle.dump(ranking, handle, protocol=4)
             metadata_path = ranking_path.with_suffix(ranking_path.suffix + ".metadata.json")
             metadata_path.write_text(json.dumps({
-                "artifact_version": 1,
+                "artifact_version": 2,
                 "document_id_kind": document_ids["id_kind"],
                 "documents": len(ranking),
-                "ranking_depth": ranking_depth,
-                "score_aggregation": "maximum raw soft-label logit across decoder steps",
-                "cutoffs": args.ranking_cutoffs,
+                "ranking_density": "all canonical labels",
+                "score_source": "sigmoid classifier probability at the label's taxonomy depth (HBGL Eq. 10)",
+                "thresholds": args.ranking_thresholds,
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            score_capture.close()
             logger.info("Wrote ranking artifact for %d documents to %s", len(ranking), ranking_path)
 
         import pickle

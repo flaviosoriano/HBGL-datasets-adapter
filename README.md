@@ -77,22 +77,30 @@ which makes checkpoints reproducible across folds.
 Prepared artifacts include a manifest. If the source data changes, regenerate
 with `--force-prepare`; the adapter will not silently reuse incompatible cache.
 
-### Direct HGCLR × HBGL ranking evaluation
+### HBGL ranking report with the HGCLR metric protocol
 
-The canonical adapter now writes `<split>_document_ids.json` beside each JSONL.
-It preserves the positional `idx` for WOS and the external `text_idx` for RCV1;
-it never uses `text_idx` to index `samples.pkl`.
+The canonical adapter writes `<split>_document_ids.json` beside each JSONL. It
+preserves positional `idx` for WOS and the external `text_idx` for RCV1; it
+never uses `text_idx` to index `samples.pkl`.
 
-`run_fold.sh` exports rankings by default (`EXPORT_RANKINGS=1`) for the best
-micro-F1 and macro-F1 checkpoints. Each artifact is an HGCLR-compatible pickle:
+When `EXPORT_RANKINGS=1` (the `run_fold.sh` default), HBGL writes a **dense
+HBGL-only** ranking report for each best checkpoint. It does not modify
+`s2s_ft/modeling_decoding.py`: the test runner attaches a temporary forward
+hook to the existing `cls` classifier. For hierarchy level `h`, it takes the
+classifier vector selected by HBGL's own `hier_labels[h]` mask and records
+`sigmoid(logit)` for every label at that label's taxonomy depth. This follows
+the score in Eq. 10 of the HBGL paper; it never max-pools logits across decode
+steps and never includes the separately appended EOS candidate.
+
+The resulting artifact is:
 
 ```python
-{"text_<external-document-id>": {"label_<source-label-id>": raw_score}}
+{"text_<external-document-id>": {"label_<source-label-id>": probability}}
 ```
 
-For each document, HBGL retains the maximum raw soft-label decoder logit over
-all decoding steps, then writes the top 10 labels. It also writes a metadata
-file and metrics JSON next to each `.rnk` under:
+It contains every canonical label, so class-filtered tail/head reporting has a
+complete candidate set. Its companion metadata and the HBGL metrics JSON are
+written under:
 
 ```text
 models/<RUN_NAME>/rankings/best_micro.rnk
@@ -101,26 +109,25 @@ models/<RUN_NAME>/rankings/best_macro.rnk
 models/<RUN_NAME>/rankings/best_macro.rnk.metrics.json
 ```
 
-The metrics use canonical `relevance_map.pkl`, the same test fold, and global
-label frequencies from the full canonical corpus. They report `precision@K`,
-`ndcg@K`, `psprecision@K`, and `psnDCG@K` for `K = 1, 5, 10`. The evaluator can
-score either an HGCLR or HBGL ranking artifact with the identical protocol:
+`evaluate_hbgl_ranking.py` is intentionally exclusive to HBGL artifacts. It
+reproduces HGCLR's head/tail filtering, full-corpus inverse-propensity weights
+(`A=0.55`, `B=1.5`), rounding, and metric names: `precision@K`, `ndcg@K`,
+`psprecision@K`, `psnDCG@K`, `Mac-F1@K`, and `Mic-F1@K`, with `K=1,5,10` by
+default. The original HBGL paper used a different reported metric set; this is
+a separate requested ranking report using HGCLR's calculation protocol.
 
 ```shell
-python3 evaluate_ranking_artifact.py \
-  --ranking-file path/to/model.rnk \
+python3 evaluate_hbgl_ranking.py \
+  --ranking-file models/<RUN_NAME>/rankings/best_micro.rnk \
   --dataset-dir ../datasets/RCV1-103-H3 \
   --dataset-name RCV1-103-H3 \
   --fold 0 \
-  --prepared-dir resource/prepared-datasets/RCV1-103-H3/fold_0 \
-  --output-file results.json \
-  --cutoffs 1 5 10
+  --output-file models/<RUN_NAME>/rankings/best_micro.rnk.metrics.json \
+  --thresholds 1 5 10
 ```
 
-Set `EXPORT_RANKINGS=0` only when a ranking artifact is intentionally not
-needed. `FORCE_PREPARE=1` is the runner default so an existing prepared fold is
-upgraded with the identity and corpus-statistics sidecars before ranking starts;
-set it to `0` only after a verified compatible preparation. Ranking export
-requires standard non-hierarchical `--soft_label` greedy decoding; it deliberately
-refuses beam and hierarchical soft-label modes rather than silently producing
-incomparable scores.
+The ranking route requires greedy hierarchical soft-label decoding
+(`--soft_label --soft_label_hier_real`) and one GPU. It validates that the
+prepared taxonomy and HBGL's live hierarchy masks select exactly the same
+labels at each level, and that ranking coverage equals the canonical test fold.
+Set `EXPORT_RANKINGS=0` only when this report is intentionally not needed.

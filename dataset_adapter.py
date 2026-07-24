@@ -7,7 +7,6 @@ fold, so feature caches and targets cannot be accidentally reused across folds.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import hashlib
 import json
 import os
@@ -20,7 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-ARTIFACT_VERSION = 4
+ARTIFACT_VERSION = 3
 REQUIRED_SPLITS = ("train", "val", "test")
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RCV1_TAXONOMY = REPO_ROOT / "data" / "rcv1" / "rcv1.taxonomy"
@@ -379,17 +378,6 @@ def build_split_document_ids(
     return {"id_kind": id_kind, "ids": document_ids}
 
 
-def build_corpus_label_counts(samples: Iterable[dict[str, Any]]) -> dict[str, int]:
-    """Count source label IDs across the immutable canonical corpus."""
-    counts: Counter[int] = Counter()
-    for sample in samples:
-        labels = sample.get("labels_ids")
-        if not isinstance(labels, list) or not all(isinstance(label_id, int) for label_id in labels):
-            raise DatasetValidationError("sample has invalid labels_ids while building corpus counts")
-        counts.update(labels)
-    return {str(label_id): count for label_id, count in sorted(counts.items())}
-
-
 def _sample_labels(sample: dict[str, Any], id_to_label: dict[int, str]) -> list[tuple[int, str]]:
     pairs: list[tuple[int, str]] = []
     seen: set[int] = set()
@@ -490,10 +478,6 @@ def prepare_fold(
                 json.dumps(build_split_document_ids(samples, split_ids[split], dataset_name), sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-        (temporary / "corpus_label_counts.json").write_text(
-            json.dumps({"documents": len(samples), "label_counts": build_corpus_label_counts(samples)}, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
         with (temporary / "label_map.pkl").open("wb") as handle:
             pickle.dump(label_map, handle, protocol=4)
         _write_taxonomy(temporary / "label_taxonomy.tsv", taxonomy)

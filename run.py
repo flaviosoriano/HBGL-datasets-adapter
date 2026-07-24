@@ -440,8 +440,8 @@ def resolve_dataset_inputs(args, parser):
     if canonical_mode:
         if not all(value is not None for value in canonical_values):
             parser.error("--dataset-dir, --dataset-name and --fold must be supplied together")
-        if args.export_rankings and args.soft_label_hier_real:
-            parser.error("--export-rankings is not supported with --soft_label_hier_real")
+        if args.export_rankings and not args.soft_label_hier_real:
+            parser.error("--export-rankings requires --soft_label_hier_real to preserve HBGL Eq.-10 level scores")
         legacy_values = (args.train_file, args.valid_file, args.test_file, args.add_vocab_file)
         if any(value is not None for value in legacy_values):
             parser.error("canonical dataset mode cannot be mixed with --train_file/--valid_file/--test_file/--add_vocab_file")
@@ -460,6 +460,7 @@ def resolve_dataset_inputs(args, parser):
         args.valid_file = str(prepared.path / "val.jsonl")
         args.test_file = str(prepared.path / "test.jsonl")
         args.ranking_document_ids_file = str(prepared.path / "test_document_ids.json")
+        args.ranking_taxonomy_file = str(prepared.path / "label_taxonomy.tsv")
         args.add_vocab_file = str(prepared.path / "label_map.pkl")
         if args.label_cpt is None:
             args.label_cpt = str(prepared.path / "label_taxonomy.tsv")
@@ -884,23 +885,23 @@ def test(args, best_macro_f1_path, best_micro_f1_path):
             flags.extend([
                 '--ranking_output_file', ranking_path,
                 '--document_ids_file', args.ranking_document_ids_file,
-                '--ranking_cutoffs',
+                '--label_taxonomy_file', args.ranking_taxonomy_file,
+                '--ranking_thresholds',
             ] + [str(cutoff) for cutoff in args.ranking_cutoffs])
 
         out = main(flags)
         if ranking_path:
-            from evaluate_ranking_artifact import main as evaluate_ranking_artifact
-            ranking_result = evaluate_ranking_artifact([
+            from evaluate_hbgl_ranking import main as evaluate_hbgl_ranking
+            ranking_result = evaluate_hbgl_ranking([
                 '--ranking-file', ranking_path,
                 '--dataset-dir', args.dataset_dir,
                 '--dataset-name', args.dataset_name,
                 '--fold', str(args.fold),
-                '--prepared-dir', os.path.dirname(args.ranking_document_ids_file),
                 '--output-file', ranking_path + '.metrics.json',
-                '--cutoffs',
+                '--thresholds',
             ] + [str(cutoff) for cutoff in args.ranking_cutoffs])
-            out['ranking_metrics'] = ranking_result['metrics']
-            logger.info('Ranking metrics for %s: %s', selector, ranking_result['metrics'])
+            out['ranking_metrics'] = ranking_result['results']
+            logger.info('HBGL ranking metrics for %s: %s', selector, ranking_result['results'])
         prefix = 'test' + 'micro' if i == 0 else 'macro'
         if args.wandb:
             wandb.log({f'{prefix}/macro_f1': out['macro_f1'], f'{prefix}/micro_f1': out['micro_f1']})

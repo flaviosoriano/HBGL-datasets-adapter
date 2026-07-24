@@ -1126,13 +1126,7 @@ class BertForSeq2SeqDecoder(PreTrainedBertModel):
         self.hier_labels = None
         self.soft_label_hier_real = False
 
-    def forward(self, input_ids, token_type_ids, position_ids, attention_mask, task_idx=None, mask_qkv=None,
-                return_label_logits=False):
-        if return_label_logits:
-            if self.search_beam_size > 1:
-                raise ValueError("return_label_logits requires greedy decoding (search_beam_size == 1)")
-            if not self.soft_label or self.soft_label_hier_real:
-                raise ValueError("return_label_logits requires non-hierarchical soft-label decoding")
+    def forward(self, input_ids, token_type_ids, position_ids, attention_mask, task_idx=None, mask_qkv=None):
         if self.search_beam_size > 1:
             return self.beam_search(input_ids, token_type_ids, position_ids, attention_mask,
                                     task_idx=task_idx, mask_qkv=mask_qkv)
@@ -1144,7 +1138,6 @@ class BertForSeq2SeqDecoder(PreTrainedBertModel):
         output_length = output_shape[1]
 
         output_ids = []
-        label_logit_steps = []
         prev_embedding = None
         prev_encoded_layers = None
         curr_ids = input_ids
@@ -1245,8 +1238,6 @@ class BertForSeq2SeqDecoder(PreTrainedBertModel):
                 else:
                     lsi = self.label_start_index
                     prediction_scores, _ = self.cls(last_hidden, None, task_idx=task_idx)
-                    if return_label_logits:
-                        label_logit_steps.append(prediction_scores[:, 0, lsi:].detach())
 
                     prediction_scores = torch.cat([prediction_scores[:, :, self.eos_id].unsqueeze(-1),
                                                 prediction_scores[:, :, lsi:]], dim=-1)
@@ -1354,13 +1345,7 @@ class BertForSeq2SeqDecoder(PreTrainedBertModel):
             for i, oi in enumerate(_output_ids):
                 _output_ids[i] = torch.LongTensor(oi + [0] * (max_l - len(oi))).unsqueeze(0)
             output_ids = _output_ids
-            decoded_ids = torch.cat(output_ids, dim=0)
-            if return_label_logits:
-                return {
-                    "pred_seq": decoded_ids,
-                    "label_logits": torch.stack(label_logit_steps, dim=1),
-                }
-            return decoded_ids
+            return torch.cat(output_ids, dim=0)
         else:
             return torch.cat(output_ids, dim=1)
 
