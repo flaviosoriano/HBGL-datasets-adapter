@@ -476,7 +476,7 @@ def _available_folds(dataset_dir: Path) -> list[int]:
     for path in dataset_dir.glob("fold_*"):
         if path.is_dir():
             try:
-                folds.append(int(path.name.removeprefix("fold_")))
+                folds.append(int(path.name[len("fold_"):]))
             except ValueError:
                 continue
     return sorted(folds)
