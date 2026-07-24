@@ -38,6 +38,10 @@ class RunFoldHierarchyLengthTests(unittest.TestCase):
         self.assertIn("hierarchy_levels_from_training_file", source)
         self.assertIn("args.max_tgt_length = len(hierarchy_levels)", source)
 
+    def test_taxonomy_label_tokens_follow_uncased_tokenizer_lookup(self):
+        source = (Path(__file__).resolve().parents[1] / "test.py").read_text(encoding="utf-8")
+        self.assertIn("tokenizer.convert_tokens_to_ids(token.lower())", source)
+
 
 if __name__ == "__main__":
     unittest.main()

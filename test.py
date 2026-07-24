@@ -75,7 +75,7 @@ def hierarchy_token_ids_by_depth(tokenizer, label_map, taxonomy_path):
     source_to_token = {}
     for token in label_map.values():
         source_id = int(token[3:-1])
-        token_id = tokenizer.convert_tokens_to_ids(token)
+        token_id = tokenizer.convert_tokens_to_ids(token.lower())
         if not isinstance(token_id, int) or token_id < 0:
             raise ValueError("tokenizer cannot resolve canonical label token {}".format(token))
         source_to_token[source_id] = token_id
