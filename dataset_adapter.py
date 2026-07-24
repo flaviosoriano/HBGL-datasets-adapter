@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-ARTIFACT_VERSION = 3
+ARTIFACT_VERSION = 4
 REQUIRED_SPLITS = ("train", "val", "test")
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RCV1_TAXONOMY = REPO_ROOT / "data" / "rcv1" / "rcv1.taxonomy"
@@ -345,6 +345,42 @@ def sanitize_text(value: str) -> str:
     )
 
 
+def canonical_test_indices(
+    samples: list[dict[str, Any]], indices: Iterable[int], dataset_name: str
+) -> list[int]:
+    """Return test indices with one canonical RCV1 row per external document.
+
+    RCV1 source folds may contain multiple positional rows for the same
+    ``text_idx``.  Rankings and HGCLR's relevance/class maps are keyed by that
+    external ID, so decode one row per identical document rather than silently
+    overwriting a ranking.  Training and validation deliberately retain all
+    positional rows.
+    """
+    indices = list(indices)
+    if dataset_name != "RCV1-103-H3":
+        return indices
+
+    retained: list[int] = []
+    source_by_document: dict[int, str] = {}
+    for index in indices:
+        sample = samples[index]
+        document_id = sample.get("text_idx")
+        if not isinstance(document_id, int):
+            raise DatasetValidationError(
+                f"RCV1 sample idx={index} has invalid evaluation ID {document_id!r}"
+            )
+        source = " ".join(sanitize_text(sample["text"]).split())
+        previous = source_by_document.get(document_id)
+        if previous is None:
+            source_by_document[document_id] = source
+            retained.append(index)
+        elif previous != source:
+            raise DatasetValidationError(
+                f"RCV1 test has text_idx={document_id} with different normalized source text"
+            )
+    return retained
+
+
 def build_split_document_ids(
     samples: list[dict[str, Any]], indices: Iterable[int], dataset_name: str
 ) -> dict[str, Any]:
@@ -448,6 +484,10 @@ def prepare_fold(
     samples = load_samples(dataset_dir)
     split_ids = load_fold_ids(dataset_dir, fold)
     validate_dataset(samples, split_ids, dataset_name, fold)
+    prepared_split_ids = dict(split_ids)
+    prepared_split_ids["test"] = canonical_test_indices(
+        samples, split_ids["test"], dataset_name
+    )
     if dataset_name == "WOS-150-H2":
         taxonomy, id_to_label = build_wos_taxonomy(samples)
         fallbacks: list[dict[str, str]] = []
@@ -470,12 +510,13 @@ def prepare_fold(
     temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=target_parent))
     try:
         for split in REQUIRED_SPLITS:
+            prepared_indices = prepared_split_ids[split]
             _write_jsonl(
                 temporary / f"{split}.jsonl",
-                _make_rows(samples, split_ids[split], split, id_to_label, label_map, depths),
+                _make_rows(samples, prepared_indices, split, id_to_label, label_map, depths),
             )
             (temporary / f"{split}_document_ids.json").write_text(
-                json.dumps(build_split_document_ids(samples, split_ids[split], dataset_name), sort_keys=True) + "\n",
+                json.dumps(build_split_document_ids(samples, prepared_indices, dataset_name), sort_keys=True) + "\n",
                 encoding="utf-8",
             )
         with (temporary / "label_map.pkl").open("wb") as handle:
@@ -484,7 +525,9 @@ def prepare_fold(
         manifest = {
             "artifact_version": ARTIFACT_VERSION,
             "source": source,
-            "counts": {split: len(split_ids[split]) for split in REQUIRED_SPLITS},
+            "counts": {split: len(prepared_split_ids[split]) for split in REQUIRED_SPLITS},
+            "source_counts": {split: len(split_ids[split]) for split in REQUIRED_SPLITS},
+            "test_external_id_rows_collapsed": len(split_ids["test"]) - len(prepared_split_ids["test"]),
             "labels": len(label_map),
             "max_depth": max(depths.values()),
             "taxonomy_source": taxonomy_source,

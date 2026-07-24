@@ -67,6 +67,11 @@ def _load_canonical_protocol(dataset_dir, dataset_name, fold):
             raise ValueError("canonical relevance is missing test document {}".format(document_id))
         document_key = "text_{}".format(document_id)
         if document_key in all_test_documents:
+            if dataset_name == "RCV1-103-H3":
+                # Canonical RCV1 folds may repeat a positional row for the same
+                # external document.  Rankings/qrels are keyed by text_idx, so
+                # evaluate that document once.
+                continue
             raise ValueError("test fold has duplicate external document ID {}".format(document_key))
         all_test_documents.add(document_key)
         labels = relevance_raw[document_id]
