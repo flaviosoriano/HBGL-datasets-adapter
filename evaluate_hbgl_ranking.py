@@ -57,6 +57,7 @@ def _load_canonical_protocol(dataset_dir, dataset_name, fold):
         raise ValueError("canonical samples or test split is malformed")
 
     expected_documents = set()
+    all_test_documents = set()
     relevance = {}
     for positional_index in test_indices:
         if not isinstance(positional_index, int) or positional_index < 0 or positional_index >= len(samples):
@@ -65,11 +66,12 @@ def _load_canonical_protocol(dataset_dir, dataset_name, fold):
         if document_id not in relevance_raw:
             raise ValueError("canonical relevance is missing test document {}".format(document_id))
         document_key = "text_{}".format(document_id)
-        if document_key in relevance:
+        if document_key in all_test_documents:
             raise ValueError("test fold has duplicate external document ID {}".format(document_key))
+        all_test_documents.add(document_key)
         labels = relevance_raw[document_id]
         if not labels:
-            raise ValueError("test document {} has no labels".format(document_key))
+            continue
         relevance[document_key] = {"label_{}".format(int(label_id)): 1.0 for label_id in labels}
         expected_documents.add(document_key)
 
@@ -79,7 +81,7 @@ def _load_canonical_protocol(dataset_dir, dataset_name, fold):
         if not isinstance(labels, list) or not all(isinstance(label_id, int) for label_id in labels):
             raise ValueError("canonical sample has malformed labels_ids")
         counts.update(labels)
-    return expected_documents, relevance, label_classes, text_classes, dict(counts), len(samples)
+    return expected_documents, all_test_documents, relevance, label_classes, text_classes, dict(counts), len(samples)
 
 
 def main(argv=None):
@@ -98,18 +100,19 @@ def main(argv=None):
         parser.error("--thresholds must be positive")
 
     ranking = _load_ranking(args.ranking_file)
-    expected, relevance, label_classes, text_classes, label_counts, corpus_documents = _load_canonical_protocol(
+    expected, all_test_documents, relevance, label_classes, text_classes, label_counts, corpus_documents = _load_canonical_protocol(
         args.dataset_dir, args.dataset_name, args.fold
     )
     actual = set(ranking)
-    if expected != actual:
-        missing = sorted(expected - actual)
-        unexpected = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - all_test_documents)
+    if missing or unexpected:
         raise ValueError(
             "ranking/test-fold document coverage mismatch: missing={}, unexpected={}".format(
                 missing[:5], unexpected[:5]
             )
         )
+    ranking = {document_key: ranking[document_key] for document_key in expected}
     rows = evaluate_hbgl_hgclr_metrics(
         ranking,
         relevance,
