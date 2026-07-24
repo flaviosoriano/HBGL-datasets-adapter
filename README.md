@@ -56,7 +56,9 @@ bash run_fold.sh RCV1-103-H3 0 rcv1-fold-0
 ```
 
 The wrappers `run_wos.sh FOLD [RUN_NAME]` and `run_rcv1.sh FOLD [RUN_NAME]`
-call the same runner. Set `HBGL_WANDB=1` to enable Weights & Biases logging.
+call the same runner. `run_rcv1.sh` defaults to `PER_GPU_TRAIN_BATCH_SIZE=32`,
+validated on the RTX A6000; override it explicitly when reproducing a different
+batch configuration. Set `HBGL_WANDB=1` to enable Weights & Biases logging.
 Use a distinct run name for every fold: outputs, prepared artifacts, and
 feature caches are deliberately fold-scoped.
 

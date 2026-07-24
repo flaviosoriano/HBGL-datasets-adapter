@@ -16,6 +16,7 @@ DATASETS_DIR=${DATASETS_DIR:-"${SCRIPT_DIR}/../datasets"}
 PREPARED_DATA_DIR=${PREPARED_DATA_DIR:-"${SCRIPT_DIR}/resource/prepared-datasets"}
 OUTPUT_DIR=${OUTPUT_DIR:-"${SCRIPT_DIR}/models/${RUN_NAME}"}
 CACHE_DIR=${CACHE_DIR:-"${SCRIPT_DIR}/.cache/${DATASET}/fold_${FOLD}"}
+PER_GPU_TRAIN_BATCH_SIZE=${PER_GPU_TRAIN_BATCH_SIZE:-12}
 
 case "$DATASET" in
   WOS-150-H2)
@@ -53,7 +54,7 @@ COMMAND=(
   --do_lower_case
   --max_source_seq_length "$MAX_SOURCE_LENGTH"
   --max_target_seq_length "$MAX_TARGET_LENGTH"
-  --per_gpu_train_batch_size 12
+  --per_gpu_train_batch_size "$PER_GPU_TRAIN_BATCH_SIZE"
   --gradient_accumulation_steps 1
   --label_smoothing 0
   --learning_rate 3e-5
