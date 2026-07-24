@@ -40,11 +40,15 @@ if [[ ! -x "$CONDA_DIR/bin/conda" ]]; then
     rm -f "$installer"
 fi
 
-if [[ ! -x "$HBGL_ENV/bin/python" ]]; then
-    "$CONDA_DIR/bin/conda" create --yes --prefix "$HBGL_ENV" python=3.8.18 pip=23.3.2
+RUNTIME_MARKER="$ROOT/.hbgl-runtime-legacy-v1.ready"
+if [[ ! -f "$RUNTIME_MARKER" ]]; then
+    if [[ ! -x "$HBGL_ENV/bin/python" ]]; then
+        "$CONDA_DIR/bin/conda" create --yes --prefix "$HBGL_ENV" python=3.8.18 pip
+    fi
+    "$CONDA_DIR/bin/conda" run --prefix "$HBGL_ENV" python -m pip install --no-cache-dir 'pip<24.1'
     "$CONDA_DIR/bin/conda" run --prefix "$HBGL_ENV" python -m pip install --no-cache-dir \
-        'torch==1.8.2+cu111' \
-        -f https://download.pytorch.org/whl/torch_stable.html
+        'torch==1.8.2' \
+        --extra-index-url https://download.pytorch.org/whl/lts/1.8/cu111
     "$CONDA_DIR/bin/conda" run --prefix "$HBGL_ENV" python -m pip install --no-cache-dir \
         'numpy==1.19.5' \
         'boto3==1.17.112' \
@@ -59,6 +63,7 @@ if [[ ! -x "$HBGL_ENV/bin/python" ]]; then
         'regex==2021.11.10' \
         'protobuf==3.20.3'
     "$CONDA_DIR/bin/conda" run --prefix "$HBGL_ENV" python -m pip check
+    touch "$RUNTIME_MARKER"
 fi
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
