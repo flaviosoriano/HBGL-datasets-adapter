@@ -18,6 +18,7 @@ DATASET_DIR="$DATASETS_DIR/$DATASET"
 PREPARED_DATA_DIR="$REPO_DIR/resource/prepared-datasets"
 OUTPUT_DIR="$REPO_DIR/models/$RUN_ID"
 CACHE_DIR="$REPO_DIR/.cache/$DATASET/fold_${FOLD}/$RUN_ID"
+PRETRAINED_DIR="$ROOT/pretrained/bert-base-uncased"
 LOG_DIR="$ROOT/logs/$RUN_ID"
 
 [[ -x "$HBGL_ENV/bin/python" ]] || { echo "Missing HBGL environment: $HBGL_ENV" >&2; exit 1; }
@@ -52,6 +53,23 @@ done
     python "$REPO_DIR/dataset_adapter.py" validate \
     --dataset-dir "$DATASET_DIR" --dataset-name "$DATASET"
 
+# Transformers 2.x maps bert-base-uncased to a retired S3 URL.  Pre-stage the
+# exact public checkpoint from the Hub and make the legacy loader use that path.
+if [[ ! -f "$PRETRAINED_DIR/config.json" || ! -f "$PRETRAINED_DIR/pytorch_model.bin" || ! -f "$PRETRAINED_DIR/vocab.txt" ]]; then
+    export HF_HOME="$ROOT/.cache/huggingface"
+    PRETRAINED_DIR="$PRETRAINED_DIR" "$CONDA_DIR/bin/conda" run --no-capture-output --prefix "$HBGL_ENV" python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="bert-base-uncased",
+    local_dir=os.environ["PRETRAINED_DIR"],
+    local_dir_use_symlinks=False,
+    allow_patterns=["config.json", "pytorch_model.bin", "vocab.txt"],
+)
+PY
+fi
+
 mkdir -p "$LOG_DIR" "$CACHE_DIR"
 printf 'run_id=%s\ndataset=%s\nfold=%s\nbatch_size=%s\ntraining_steps=%s\nrepo_commit=%s\n' \
     "$RUN_ID" "$DATASET" "$FOLD" "$BATCH_SIZE" "$TRAINING_STEPS" \
@@ -65,7 +83,7 @@ printf 'run_id=%s\ndataset=%s\nfold=%s\nbatch_size=%s\ntraining_steps=%s\nrepo_c
     --prepared-data-dir "$PREPARED_DATA_DIR" \
     --output_dir "$OUTPUT_DIR" \
     --model_type bert \
-    --model_name_or_path bert-base-uncased \
+    --model_name_or_path "$PRETRAINED_DIR" \
     --do_lower_case \
     --max_source_seq_length 509 \
     --max_target_seq_length 3 \
