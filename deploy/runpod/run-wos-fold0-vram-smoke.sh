@@ -13,6 +13,7 @@ FOLD=0
 HF_DATASET_REPO=${HF_DATASET_REPO:-LBD-UFMG/WOS-150-H2}
 BATCH_SIZE=${BATCH_SIZE:-12}
 TRAINING_STEPS=${TRAINING_STEPS:-12}
+SAVE_STEPS=${SAVE_STEPS:-1000}
 RUN_ID=${RUN_ID:-"wos-fold0-vram-smoke-b${BATCH_SIZE}-$(date -u +%Y%m%dT%H%M%SZ)"}
 DATASET_DIR="$DATASETS_DIR/$DATASET"
 PREPARED_DATA_DIR="$REPO_DIR/resource/prepared-datasets"
@@ -95,10 +96,13 @@ printf 'run_id=%s\ndataset=%s\nfold=%s\nbatch_size=%s\ntraining_steps=%s\nrepo_c
     --num_warmup_steps 0 \
     --num_training_steps "$TRAINING_STEPS" \
     --cache_dir "$CACHE_DIR" \
-    --save_steps 1000 \
+    --save_steps "$SAVE_STEPS" \
     --random_prob 0 \
     --keep_prob 0 \
     --soft_label \
+    --soft_label_hier_real \
+    --export-rankings \
+    --ranking-cutoffs 1 5 10 \
     --seed 42 \
     --random_label_init \
     --label_cpt_steps 300 \

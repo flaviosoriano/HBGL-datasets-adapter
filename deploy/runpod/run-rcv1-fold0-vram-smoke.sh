@@ -129,6 +129,7 @@ printf 'run_id=%s\ndataset=%s\nfold=%s\nbatch_size=%s\ntraining_steps=%s\nlabel_
     --random_prob 0 \
     --keep_prob 0 \
     --soft_label \
+    --soft_label_hier_real \
     --seed 42 \
     --random_label_init \
     --label_cpt_steps "$LABEL_CPT_STEPS" \
