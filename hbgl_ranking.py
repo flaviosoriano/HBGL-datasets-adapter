@@ -95,11 +95,17 @@ def hierarchy_levels_from_training_file(training_file):
             elif len(target) != len(levels):
                 raise ValueError("training targets have inconsistent hierarchy depths")
             for depth, labels in enumerate(target):
-                if not isinstance(labels, list) or not labels or not all(isinstance(label, str) for label in labels):
+                if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
                     raise ValueError("training target at line {} has invalid labels at depth {}".format(line_number, depth))
                 levels[depth].update(labels)
     if levels is None:
         raise ValueError("training file has no targets")
+    while levels and not levels[-1]:
+        levels.pop()
+    if not levels:
+        raise ValueError("training file has no label hierarchy levels")
+    if any(not level for level in levels):
+        raise ValueError("training hierarchy has an empty nonterminal level")
     return levels
 
 

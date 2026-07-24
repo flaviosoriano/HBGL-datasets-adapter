@@ -32,6 +32,19 @@ class PaperAlignedScoreTests(unittest.TestCase):
         )
         self.assertEqual(levels, [[10, 11], [20]])
 
+    def test_ignores_empty_padding_slots_in_training_targets(self):
+        rows = [
+            {"tgt": [["[A_10]"], ["[A_20]"], []]},
+            {"tgt": [["[A_11]"], [], []]},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "train.jsonl"
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            self.assertEqual(
+                hierarchy_levels_from_training_file(path),
+                [{"[A_10]", "[A_11]"}, {"[A_20]"}],
+            )
+
     def test_reads_hierarchy_levels_from_training_targets(self):
         rows = [
             {"tgt": [["[A_10]"], ["[A_20]", "[A_21]"]]},
