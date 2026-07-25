@@ -74,6 +74,52 @@ def label_ids_by_depth_from_taxonomy(label_map, taxonomy_text):
     return levels
 
 
+def supported_label_ids_by_training_hierarchy(
+    taxonomy_levels, training_levels, label_map
+):
+    """Keep only canonical labels for which HBGL built a fold-local mask.
+
+    A fold may have no training example for a globally defined canonical label.
+    HBGL cannot score that label because it is absent from ``hier_labels``.  The
+    ranking must therefore use the trained mask, while rejecting any token that
+    would place a label outside its canonical taxonomy depth.
+    """
+    if len(taxonomy_levels) != len(training_levels):
+        raise ValueError("taxonomy and training hierarchy have different depths")
+    source_id_by_token = {}
+    for token in label_map.values():
+        if not isinstance(token, str) or not token.startswith("[A_") or not token.endswith("]"):
+            raise ValueError("label map token is not canonical: {!r}".format(token))
+        source_id_by_token[token] = int(token[3:-1])
+
+    supported_levels = []
+    for depth, (taxonomy_ids, training_tokens) in enumerate(
+        zip(taxonomy_levels, training_levels)
+    ):
+        canonical_ids = set(taxonomy_ids)
+        supported_ids = set()
+        for token in training_tokens:
+            try:
+                source_id = source_id_by_token[token]
+            except KeyError as error:
+                raise ValueError(
+                    "training hierarchy has unknown label token {!r} at depth {}".format(
+                        token, depth
+                    )
+                ) from error
+            if source_id not in canonical_ids:
+                raise ValueError(
+                    "training label {} is outside canonical taxonomy depth {}".format(
+                        source_id, depth
+                    )
+                )
+            supported_ids.add(source_id)
+        if not supported_ids:
+            raise ValueError("training hierarchy has no supported labels at depth {}".format(depth))
+        supported_levels.append(sorted(supported_ids))
+    return supported_levels
+
+
 def hierarchy_levels_from_training_file(training_file):
     """Read the ordered hierarchical label sets used by HBGL soft-label training.
 

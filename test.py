@@ -26,6 +26,7 @@ from hbgl_ranking import (
     build_document_label_scores,
     hierarchy_levels_from_training_file,
     label_ids_by_depth_from_taxonomy,
+    supported_label_ids_by_training_hierarchy,
 )
 
 TOKENIZER_CLASSES = {
@@ -265,6 +266,7 @@ def main(flags=None):
         args.tokenizer_name, do_lower_case=args.do_lower_case,
         cache_dir=args.cache_dir if args.cache_dir else None)
 
+    label_map = None
     if args.add_vocab_file:
         import pickle
         with open(args.add_vocab_file, 'rb') as f:
@@ -275,10 +277,6 @@ def main(flags=None):
         add_token_num = len(labels_key)
         ranking_level_token_ids = None
         ranking_source_id_by_token = None
-        if ranking_enabled:
-            _ranking_level_label_ids, ranking_level_token_ids, ranking_source_id_by_token = hierarchy_token_ids_by_depth(
-                tokenizer, label_map, args.label_taxonomy_file
-            )
 
     hierarchy_levels = None
     if args.soft_label_hier_real_with_train_file:
@@ -289,6 +287,24 @@ def main(flags=None):
         # decoding must stop after the actual label levels before the decoder
         # indexes ``model.hier_labels`` beyond its final level.
         args.max_tgt_length = len(hierarchy_levels)
+
+    if ranking_enabled:
+        if label_map is None or hierarchy_levels is None:
+            raise ValueError("ranking requires canonical labels and a training hierarchy")
+        canonical_level_label_ids, _canonical_level_token_ids, ranking_source_id_by_token = hierarchy_token_ids_by_depth(
+            tokenizer, label_map, args.label_taxonomy_file
+        )
+        supported_level_label_ids = supported_label_ids_by_training_hierarchy(
+            canonical_level_label_ids, hierarchy_levels, label_map
+        )
+        token_by_source_id = {
+            source_id: token_id
+            for token_id, source_id in ranking_source_id_by_token.items()
+        }
+        ranking_level_token_ids = [
+            [token_by_source_id[source_id] for source_id in level]
+            for level in supported_level_label_ids
+        ]
 
     if args.model_type == "roberta":
         vocab = tokenizer.encoder
