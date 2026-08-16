@@ -510,7 +510,8 @@ def main(flags=None):
                 "artifact_version": 2,
                 "document_id_kind": document_ids["id_kind"],
                 "documents": len(ranking),
-                "ranking_density": "all canonical labels",
+                "ranking_density": "fold-supported canonical labels",
+                "supported_labels": sum(len(level) for level in ranking_level_token_ids),
                 "score_source": "sigmoid classifier probability at the label's taxonomy depth (HBGL Eq. 10)",
                 "thresholds": args.ranking_thresholds,
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")

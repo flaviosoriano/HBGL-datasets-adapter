@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-ARTIFACT_VERSION = 4
+ARTIFACT_VERSION = 5
 REQUIRED_SPLITS = ("train", "val", "test")
+SUPPORTED_DATASET_NAMES = ("WOS-150-H2", "RCV1-103-H3", "Eurlex-4k")
+EXTERNAL_ID_DATASETS = frozenset(("RCV1-103-H3", "Eurlex-4k"))
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_RCV1_TAXONOMY = REPO_ROOT / "data" / "rcv1" / "rcv1.taxonomy"
 DEFAULT_RCV1_TOPIC_CODES = REPO_ROOT / "data" / "rcv1" / "rcv1_topic_codes.json"
@@ -34,6 +36,13 @@ class DatasetValidationError(ValueError):
 class PreparedFold:
     path: Path
     reused: bool
+
+
+@dataclass(frozen=True)
+class EurlexEvaluation:
+    relevance: dict[int, list[int]]
+    label_classes: dict[int, list[str]]
+    text_classes: dict[int, list[str]]
 
 
 def normalize_label(value: Any) -> str:
@@ -92,6 +101,129 @@ def build_source_id_to_label(samples: Iterable[dict[str, Any]]) -> dict[int, str
                     f"label ID {label_id} maps to both {existing!r} and {canonical_label!r}"
                 )
     return dict(sorted(id_to_label.items()))
+
+
+def _load_source_pickle(path: Path, description: str) -> Any:
+    if not path.is_file():
+        raise DatasetValidationError(f"missing {description}: {path}")
+    try:
+        with path.open("rb") as handle:
+            return pickle.load(handle)
+    except (OSError, EOFError, pickle.UnpicklingError) as error:
+        raise DatasetValidationError(f"could not load {description}: {path}") from error
+
+
+def build_eurlex_taxonomy(
+    samples: list[dict[str, Any]], raw_taxonomy: Any
+) -> tuple[dict[str, list[str]], dict[int, str]]:
+    """Translate Eurlex integer root children to HBGL's named taxonomy."""
+    id_to_label = build_source_id_to_label(samples)
+    if not isinstance(raw_taxonomy, dict) or set(raw_taxonomy) != {"root"}:
+        raise DatasetValidationError("Eurlex label_taxonomy.pkl must contain only a root key")
+    children = raw_taxonomy["root"]
+    if not isinstance(children, (list, tuple)):
+        raise DatasetValidationError("Eurlex taxonomy root must contain a list of label IDs")
+    if any(type(label_id) is not int for label_id in children):
+        raise DatasetValidationError("Eurlex taxonomy root contains a non-integer label ID")
+    if len(set(children)) != len(children):
+        raise DatasetValidationError("Eurlex taxonomy root contains duplicate label IDs")
+    observed_ids = set(id_to_label)
+    if set(children) != observed_ids:
+        missing = sorted(observed_ids - set(children))
+        extra = sorted(set(children) - observed_ids)
+        raise DatasetValidationError(
+            "Eurlex taxonomy IDs do not match sample labels; "
+            f"missing={missing[:5]}, extra={extra[:5]}"
+        )
+    label_to_id: dict[str, int] = {}
+    for label_id, label in id_to_label.items():
+        previous = label_to_id.setdefault(label, label_id)
+        if previous != label_id:
+            raise DatasetValidationError(
+                f"Eurlex label name {label!r} maps to multiple IDs"
+            )
+    taxonomy = {"Root": [id_to_label[label_id] for label_id in sorted(children)]}
+    _validate_tree(taxonomy, id_to_label.values())
+    return taxonomy, id_to_label
+
+
+def load_eurlex_evaluation(
+    dataset_dir: Path, samples: list[dict[str, Any]], id_to_label: dict[int, str]
+) -> EurlexEvaluation:
+    """Load and validate Eurlex external-ID ranking protocol artifacts."""
+    root = Path(dataset_dir)
+    relevance_raw = _load_source_pickle(root / "relevance_map.pkl", "Eurlex relevance map")
+    label_classes_raw = _load_source_pickle(root / "label_cls.pkl", "Eurlex label classes")
+    text_classes_raw = _load_source_pickle(root / "text_cls.pkl", "Eurlex text classes")
+    if not all(isinstance(value, dict) for value in (
+        relevance_raw, label_classes_raw, text_classes_raw
+    )):
+        raise DatasetValidationError("Eurlex evaluation artifacts must contain dictionaries")
+
+    document_ids: set[int] = set()
+    for row, sample in enumerate(samples):
+        document_id = sample.get("text_idx")
+        if type(document_id) is not int:
+            raise DatasetValidationError(
+                f"Eurlex sample row {row} has invalid text_idx={document_id!r}"
+            )
+        document_ids.add(document_id)
+
+    relevance: dict[int, list[int]] = {}
+    for document_id, labels in relevance_raw.items():
+        if type(document_id) is not int:
+            raise DatasetValidationError("Eurlex relevance map contains a non-integer document ID")
+        if not isinstance(labels, list) or any(type(label_id) is not int for label_id in labels):
+            raise DatasetValidationError(
+                f"Eurlex relevance for text_idx={document_id} is not a list of integer label IDs"
+            )
+        if len(set(labels)) != len(labels):
+            raise DatasetValidationError(
+                f"Eurlex relevance for text_idx={document_id} contains duplicate labels"
+            )
+        unknown = set(labels) - set(id_to_label)
+        if unknown:
+            raise DatasetValidationError(
+                f"Eurlex relevance for text_idx={document_id} contains unknown labels: "
+                f"{sorted(unknown)[:5]}"
+            )
+        relevance[document_id] = list(labels)
+    if set(relevance) != document_ids:
+        raise DatasetValidationError(
+            "Eurlex relevance map does not cover exactly the sample text_idx set; "
+            f"missing={sorted(document_ids - set(relevance))[:5]}, "
+            f"extra={sorted(set(relevance) - document_ids)[:5]}"
+        )
+
+    label_classes: dict[int, list[str]] = {}
+    for label_id, classes in label_classes_raw.items():
+        if type(label_id) is not int or not isinstance(classes, list) or not all(
+            isinstance(label_class, str) and label_class for label_class in classes
+        ):
+            raise DatasetValidationError("Eurlex label classes are malformed")
+        label_classes[label_id] = list(classes)
+    if set(label_classes) != set(id_to_label):
+        raise DatasetValidationError(
+            "Eurlex label classes do not cover exactly the observed label IDs"
+        )
+
+    text_classes: dict[int, list[str]] = {}
+    for document_id, classes in text_classes_raw.items():
+        if type(document_id) is not int or not isinstance(classes, list) or not all(
+            isinstance(text_class, str) and text_class for text_class in classes
+        ):
+            raise DatasetValidationError("Eurlex text classes are malformed")
+        text_classes[document_id] = list(classes)
+    if set(text_classes) != document_ids:
+        raise DatasetValidationError(
+            "Eurlex text classes do not cover exactly the sample text_idx set"
+        )
+
+    return EurlexEvaluation(
+        relevance=relevance,
+        label_classes=label_classes,
+        text_classes=text_classes,
+    )
 
 
 def validate_dataset(
@@ -290,16 +422,39 @@ def build_rcv1_taxonomy(
     return taxonomy, id_to_label, fallbacks
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _source_manifest(dataset_dir: Path, dataset_name: str, fold: int) -> dict[str, Any]:
     files = [dataset_dir / "samples.pkl"] + [
         dataset_dir / f"fold_{fold}" / f"{split}.pkl" for split in REQUIRED_SPLITS
     ]
+    if dataset_name == "Eurlex-4k":
+        files.extend(
+            dataset_dir / name
+            for name in (
+                "label_taxonomy.pkl",
+                "relevance_map.pkl",
+                "label_cls.pkl",
+                "text_cls.pkl",
+            )
+        )
     metadata = []
     for path in files:
         if not path.is_file():
             raise DatasetValidationError(f"missing source artifact: {path}")
         stat = path.stat()
-        metadata.append({"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+        metadata.append({
+            "path": str(path.resolve()),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "sha256": _file_sha256(path),
+        })
     encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return {
         "dataset_name": dataset_name,
@@ -348,16 +503,13 @@ def sanitize_text(value: str) -> str:
 def canonical_test_indices(
     samples: list[dict[str, Any]], indices: Iterable[int], dataset_name: str
 ) -> list[int]:
-    """Return test indices with one canonical RCV1 row per external document.
+    """Return one test row per external document for ranking-compatible datasets.
 
-    RCV1 source folds may contain multiple positional rows for the same
-    ``text_idx``.  Rankings and HGCLR's relevance/class maps are keyed by that
-    external ID, so decode one row per identical document rather than silently
-    overwriting a ranking.  Training and validation deliberately retain all
-    positional rows.
+    The source folds remain positional and untouched.  Only the prepared test
+    JSONL is deduplicated because ranking keys and qrels use the external ID.
     """
     indices = list(indices)
-    if dataset_name != "RCV1-103-H3":
+    if dataset_name not in EXTERNAL_ID_DATASETS:
         return indices
 
     retained: list[int] = []
@@ -365,9 +517,9 @@ def canonical_test_indices(
     for index in indices:
         sample = samples[index]
         document_id = sample.get("text_idx")
-        if not isinstance(document_id, int):
+        if type(document_id) is not int:
             raise DatasetValidationError(
-                f"RCV1 sample idx={index} has invalid evaluation ID {document_id!r}"
+                f"{dataset_name} sample idx={index} has invalid text_idx={document_id!r}"
             )
         source = " ".join(sanitize_text(sample["text"]).split())
         previous = source_by_document.get(document_id)
@@ -376,9 +528,66 @@ def canonical_test_indices(
             retained.append(index)
         elif previous != source:
             raise DatasetValidationError(
-                f"RCV1 test has text_idx={document_id} with different normalized source text"
+                f"{dataset_name} test has text_idx={document_id} with different normalized source text"
             )
     return retained
+
+
+def external_split_stats(
+    samples: list[dict[str, Any]],
+    split_ids: dict[str, list[int]],
+    dataset_name: str,
+) -> dict[str, Any]:
+    if dataset_name not in EXTERNAL_ID_DATASETS:
+        return {}
+    split_documents = {
+        split: {samples[index]["text_idx"] for index in indices}
+        for split, indices in split_ids.items()
+    }
+    overlaps = {}
+    for left, right in (("train", "val"), ("train", "test"), ("val", "test")):
+        overlaps[f"{left}/{right}"] = sorted(
+            split_documents[left] & split_documents[right]
+        )
+    return {
+        "documents": {split: len(documents) for split, documents in split_documents.items()},
+        "overlaps": overlaps,
+    }
+
+
+def _label_coverage_entry(label_ids: Iterable[int]) -> dict[str, Any]:
+    ids = sorted(set(label_ids))
+    return {"count": len(ids), "ids": ids}
+
+
+def label_coverage_by_split(
+    samples: list[dict[str, Any]], split_ids: dict[str, list[int]]
+) -> dict[str, dict[str, Any]]:
+    """Record unique source label IDs present in each positional split."""
+    return {
+        split: _label_coverage_entry(
+            label_id
+            for index in indices
+            for label_id in samples[index]["labels_ids"]
+        )
+        for split, indices in split_ids.items()
+    }
+
+
+def gold_label_coverage_by_split(
+    samples: list[dict[str, Any]],
+    split_ids: dict[str, list[int]],
+    relevance: dict[int, list[int]],
+) -> dict[str, dict[str, Any]]:
+    """Record label coverage using the canonical external-ID qrels."""
+    return {
+        split: _label_coverage_entry(
+            label_id
+            for index in indices
+            for label_id in relevance[samples[index]["text_idx"]]
+        )
+        for split, indices in split_ids.items()
+    }
 
 
 def build_split_document_ids(
@@ -390,7 +599,7 @@ def build_split_document_ids(
     metadata is keyed by the external ``text_idx`` instead, so this mapping is
     deliberately a sidecar rather than an indexing mechanism.
     """
-    if dataset_name == "RCV1-103-H3":
+    if dataset_name in EXTERNAL_ID_DATASETS:
         id_kind = "text_idx"
     elif dataset_name == "WOS-150-H2":
         id_kind = "idx"
@@ -434,15 +643,35 @@ def _make_rows(
     id_to_label: dict[int, str],
     label_map: dict[str, str],
     depths: dict[str, int],
+    gold_relevance: dict[int, list[int]] | None = None,
 ) -> Iterable[dict[str, Any]]:
     max_depth = max(depths.values())
     for index in indices:
         sample = samples[index]
-        labels = _sample_labels(sample, id_to_label)
+        if split == "test" and gold_relevance is not None:
+            document_id = sample.get("text_idx")
+            if type(document_id) is not int or document_id not in gold_relevance:
+                raise DatasetValidationError(
+                    f"missing canonical relevance for test text_idx={document_id!r}"
+                )
+            labels = []
+            seen: set[int] = set()
+            for label_id in gold_relevance[document_id]:
+                if label_id in seen:
+                    continue
+                seen.add(label_id)
+                try:
+                    labels.append((label_id, id_to_label[label_id]))
+                except KeyError as error:
+                    raise DatasetValidationError(
+                        f"canonical relevance contains unknown label {label_id}"
+                    ) from error
+        else:
+            labels = _sample_labels(sample, id_to_label)
         labels.sort(key=lambda pair: (depths[pair[1]], pair[0]))
         tokens = [label_map[label] for _, label in labels]
-        # HBGL's tokenizer receives ``src`` directly and requires text, not a
-        # pre-tokenized JSON list.  Preserve whitespace normalization here.
+        # HBGL tokenizer receives src directly and requires text, not a
+        # pre-tokenized JSON list. Preserve whitespace normalization here.
         row: dict[str, Any] = {"src": " ".join(sanitize_text(sample["text"]).split())}
         if split == "train":
             target = [[] for _ in range(max_depth + 1)]
@@ -488,6 +717,7 @@ def prepare_fold(
     prepared_split_ids["test"] = canonical_test_indices(
         samples, split_ids["test"], dataset_name
     )
+    evaluation: EurlexEvaluation | None = None
     if dataset_name == "WOS-150-H2":
         taxonomy, id_to_label = build_wos_taxonomy(samples)
         fallbacks: list[dict[str, str]] = []
@@ -500,6 +730,14 @@ def prepare_fold(
             raise DatasetValidationError(f"missing RCV1 topic-code map: {rcv1_topic_codes_path}") from error
         taxonomy, id_to_label, fallbacks = build_rcv1_taxonomy(samples, code_taxonomy, code_to_label)
         taxonomy_source = str(Path(rcv1_taxonomy_path).resolve())
+    elif dataset_name == "Eurlex-4k":
+        raw_taxonomy = _load_source_pickle(
+            dataset_dir / "label_taxonomy.pkl", "Eurlex label taxonomy"
+        )
+        taxonomy, id_to_label = build_eurlex_taxonomy(samples, raw_taxonomy)
+        evaluation = load_eurlex_evaluation(dataset_dir, samples, id_to_label)
+        fallbacks = []
+        taxonomy_source = str((dataset_dir / "label_taxonomy.pkl").resolve())
     else:
         raise DatasetValidationError(f"unsupported dataset name: {dataset_name!r}")
 
@@ -513,7 +751,19 @@ def prepare_fold(
             prepared_indices = prepared_split_ids[split]
             _write_jsonl(
                 temporary / f"{split}.jsonl",
-                _make_rows(samples, prepared_indices, split, id_to_label, label_map, depths),
+                _make_rows(
+                    samples,
+                    prepared_indices,
+                    split,
+                    id_to_label,
+                    label_map,
+                    depths,
+                    gold_relevance=(
+                        evaluation.relevance
+                        if evaluation is not None and split == "test"
+                        else None
+                    ),
+                ),
             )
             (temporary / f"{split}_document_ids.json").write_text(
                 json.dumps(build_split_document_ids(samples, prepared_indices, dataset_name), sort_keys=True) + "\n",
@@ -522,6 +772,11 @@ def prepare_fold(
         with (temporary / "label_map.pkl").open("wb") as handle:
             pickle.dump(label_map, handle, protocol=4)
         _write_taxonomy(temporary / "label_taxonomy.tsv", taxonomy)
+        train_label_ids = {
+            label_id
+            for index in split_ids["train"]
+            for label_id in samples[index]["labels_ids"]
+        }
         manifest = {
             "artifact_version": ARTIFACT_VERSION,
             "source": source,
@@ -529,10 +784,24 @@ def prepare_fold(
             "source_counts": {split: len(split_ids[split]) for split in REQUIRED_SPLITS},
             "test_external_id_rows_collapsed": len(split_ids["test"]) - len(prepared_split_ids["test"]),
             "labels": len(label_map),
+            "labels_seen_in_train": len(train_label_ids),
+            "labels_unseen_in_train": len(set(id_to_label) - train_label_ids),
             "max_depth": max(depths.values()),
             "taxonomy_source": taxonomy_source,
             "taxonomy_fallbacks": fallbacks,
         }
+        if dataset_name in EXTERNAL_ID_DATASETS:
+            external_stats = external_split_stats(samples, split_ids, dataset_name)
+            manifest["external_document_counts"] = external_stats["documents"]
+            manifest["external_split_overlaps"] = external_stats["overlaps"]
+        if dataset_name == "Eurlex-4k":
+            manifest["label_coverage"] = label_coverage_by_split(samples, split_ids)
+        if evaluation is not None:
+            manifest["evaluation_corpus_documents"] = len(evaluation.relevance)
+            manifest["test_target_source"] = "relevance_map.pkl"
+            manifest["evaluation_label_coverage"] = gold_label_coverage_by_split(
+                samples, split_ids, evaluation.relevance
+            )
         (temporary / "manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -567,12 +836,23 @@ def _available_folds(dataset_dir: Path) -> list[int]:
 def validate_command(dataset_dir: Path, dataset_name: str) -> None:
     samples = load_samples(dataset_dir)
     id_to_label = build_source_id_to_label(samples)
+    if dataset_name == "Eurlex-4k":
+        build_eurlex_taxonomy(
+            samples,
+            _load_source_pickle(dataset_dir / "label_taxonomy.pkl", "Eurlex label taxonomy"),
+        )
+        load_eurlex_evaluation(dataset_dir, samples, id_to_label)
     folds = _available_folds(dataset_dir)
     if not folds:
         raise DatasetValidationError(f"no fold_* directories in {dataset_dir}")
     for fold in folds:
-        validate_dataset(samples, load_fold_ids(dataset_dir, fold), dataset_name, fold)
-        print(f"{dataset_name} fold {fold}: valid")
+        split_ids = load_fold_ids(dataset_dir, fold)
+        validate_dataset(samples, split_ids, dataset_name, fold)
+        stats = external_split_stats(samples, split_ids, dataset_name)
+        suffix = ""
+        if stats:
+            suffix = f", external_documents={stats['documents']}"
+        print(f"{dataset_name} fold {fold}: valid{suffix}")
     print(f"{dataset_name}: samples={len(samples)}, labels={len(id_to_label)}, folds={folds}")
 
 
@@ -582,7 +862,7 @@ def main() -> None:
     for command in ("validate", "prepare"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--dataset-dir", type=Path, required=True)
-        subparser.add_argument("--dataset-name", choices=("WOS-150-H2", "RCV1-103-H3"), required=True)
+        subparser.add_argument("--dataset-name", choices=SUPPORTED_DATASET_NAMES, required=True)
         if command == "prepare":
             subparser.add_argument("--fold", type=int, required=True)
             subparser.add_argument("--prepared-data-dir", type=Path, default=Path("resource/prepared-datasets"))

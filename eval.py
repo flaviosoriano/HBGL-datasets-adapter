@@ -44,8 +44,6 @@ def evaluate(epoch_predicts, epoch_labels, id2label, threshold=0.5, top_k=None, 
 
     epoch_gold = epoch_labels
 
-    # initialize confusion matrix
-    confusion_count_list = [[0 for _ in range(len(id2label))] for _ in range(len(id2label))]
     right_count_list = [0 for _ in range(len(id2label))]
     gold_count_list = [0 for _ in range(len(id2label))]
     predicted_count_list = [0 for _ in range(len(id2label))]
@@ -63,9 +61,6 @@ def evaluate(epoch_predicts, epoch_labels, id2label, threshold=0.5, top_k=None, 
                 if np_sample_predict[sample_predict_descent_idx[j]] > threshold:
                     sample_predict_id_list.append(sample_predict_descent_idx[j])
 
-        for i in range(len(confusion_count_list)):
-            for predict_id in sample_predict_id_list:
-                confusion_count_list[i][predict_id] += 1
 
         # count for the gold and right items
         for gold in sample_gold:

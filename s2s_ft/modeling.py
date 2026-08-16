@@ -776,7 +776,7 @@ class BertForSequenceToSequenceWithPseudoMask(BertForSequenceToSequence):
                                                     prediction_scores_masked_sep[:, self.vs:]], dim=-1)
                     label_ids_sep = torch.cat([label_ids_sep[:, self.sep_token_id].unsqueeze(-1),
                                                label_ids_sep[:, self.vs:]], dim=-1)
-                    pseudo_lm_loss += loss_fct(prediction_scores_masked, label_ids)
+                    pseudo_lm_loss += loss_fct(prediction_scores_masked_sep, label_ids_sep)
             else:
                 loss_fct = BCEWithLogitsLoss()
                 mask_token_mask = pseudo_ids == self.mask_token_id
