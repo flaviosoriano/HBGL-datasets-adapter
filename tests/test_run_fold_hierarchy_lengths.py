@@ -22,9 +22,11 @@ class RunFoldHierarchyLengthTests(unittest.TestCase):
             return int(match.group(1))
 
         # Training includes one EOS/SEP target after the hierarchy levels.
-        # WOS-150-H2 has levels 0,1; RCV1-103-H3 has levels 0,1,2,3.
+        # WOS-150-H2 has levels 0,1; RCV1-103-H3 has levels 0,1,2,3;
+        # Eurlex-4k has one flat label level.
         self.assertEqual(configured_length("WOS-150-H2"), 3)
         self.assertEqual(configured_length("RCV1-103-H3"), 5)
+        self.assertEqual(configured_length("Eurlex-4k"), 2)
 
     def test_smoke_runners_use_their_canonical_hierarchy_lengths(self):
         repo = Path(__file__).resolve().parents[1]
@@ -41,6 +43,24 @@ class RunFoldHierarchyLengthTests(unittest.TestCase):
     def test_taxonomy_label_tokens_follow_uncased_tokenizer_lookup(self):
         source = (Path(__file__).resolve().parents[1] / "test.py").read_text(encoding="utf-8")
         self.assertIn("tokenizer.convert_tokens_to_ids(token.lower())", source)
+
+    def test_eurlex_runner_skips_label_cpt_and_random_initialization(self):
+        script = Path(__file__).resolve().parents[1] / "run_fold.sh"
+        text = script.read_text(encoding="utf-8")
+        block = re.search(r"Eurlex-4k\)\n(?P<body>.*?)(?:\n    ;;)", text, flags=re.DOTALL)
+        self.assertIsNotNone(block)
+        self.assertIn("LABEL_INIT_FLAGS=()", block.group("body"))
+        self.assertIn("MAX_TARGET_LENGTH=2", block.group("body"))
+
+    def test_eurlex_runner_loads_yaml_and_allows_explicit_overrides(self):
+        repo = Path(__file__).resolve().parents[1]
+        runner = (repo / "run_eurlex.sh").read_text(encoding="utf-8")
+        self.assertIn("EURLEX_CONFIG=${EURLEX_CONFIG:-", runner)
+        self.assertIn("CONFIG_EXPORTS=", runner)
+        self.assertIn("PYTHON_BIN=${PYTHON_BIN:-python3}", runner)
+        fold_runner = (repo / "run_fold.sh").read_text(encoding="utf-8")
+        self.assertIn('"$PYTHON_BIN" "$SCRIPT_DIR/run.py"', fold_runner)
+        self.assertIn('GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-1}', fold_runner)
 
     def test_fold_runner_allows_bounded_training_and_checkpoint_interval(self):
         source = (Path(__file__).resolve().parents[1] / "run_fold.sh").read_text(encoding="utf-8")

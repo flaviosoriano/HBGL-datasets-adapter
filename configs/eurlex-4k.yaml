@@ -1,0 +1,95 @@
+# HBGL Eurlex-4K experiment configuration.
+# run_eurlex.sh loads this file automatically. Explicitly exported shell
+# variables take precedence over values here (see README.md).
+config_version: 1
+
+dataset:
+  name: Eurlex-4k
+  data_root: /workspace/flaviossf/datasets
+  dataset_dir: /workspace/flaviossf/datasets/Eurlex-4k
+  source_read_only: true
+  folds: [0, 1, 2, 3, 4]
+  prepared_data_dir: /workspace/flaviossf/HBGL/resource/prepared-datasets
+  identity: text_idx
+  gold_source: relevance_map.pkl
+  taxonomy:
+    source: label_taxonomy.pkl
+    shape: flat
+    root: Root
+    levels: 1
+    labels: 3956
+  corpus_documents: 19281
+
+runtime:
+  python: /workspace/flaviossf/miniconda3/envs/hbgl/bin/python
+  path_prefix: /workspace/flaviossf/miniconda3/envs/hbgl/bin
+  model_name_or_path: /workspace/flaviossf/pretrained/bert-base-uncased
+  model_type: bert
+  do_lower_case: true
+
+environment:
+  PATH_PREFIX: /workspace/flaviossf/miniconda3/envs/hbgl/bin
+  DATASETS_DIR: /workspace/flaviossf/datasets
+  OMP_NUM_THREADS: 1
+  MKL_NUM_THREADS: 1
+  OPENBLAS_NUM_THREADS: 1
+  NUMEXPR_NUM_THREADS: 1
+  PER_GPU_TRAIN_BATCH_SIZE: 16
+  NUM_TRAINING_STEPS: 96000
+  SAVE_STEPS: 3000
+  EXPORT_RANKINGS: 1
+  FORCE_PREPARE: 0
+  HBGL_WANDB: 0
+
+training:
+  per_gpu_train_batch_size: 16
+  gradient_accumulation_steps: 1
+  num_training_steps: 96000
+  save_steps: 3000
+  num_warmup_steps: 500
+  learning_rate: 0.00003
+  label_smoothing: 0.0
+  random_prob: 0.0
+  keep_prob: 0.0
+  seed: 42
+  max_source_seq_length: 510
+  max_target_seq_length: 2  # one label level plus EOS/SEP
+  soft_label: true
+  soft_label_hier_real: true
+  random_label_init: false
+  label_cpt: false
+  label_cpt_steps: 0
+
+ranking:
+  export: true
+  cutoffs: [1, 5, 10]
+  protocol: HGCLR
+  score_source: HBGL_Eq10_sigmoid_at_label_depth
+  candidate_policy: fold_supported_training_labels
+  unseen_gold_labels: count_as_errors
+  duplicate_test_ids: keep_first_row_in_fold_order
+  evaluate_each_external_document_once: true
+  supported_labels_by_fold:
+    0: 3705
+    1: 3701
+    2: 3681
+    3: 3741
+    4: 3713
+  expected_test_documents_by_fold:
+    0: 3863
+    1: 3863
+    2: 3863
+    3: 3862
+    4: 3859
+
+outputs:
+  run_name_template: Eurlex-4k-fold-{fold}
+  output_dir_template: /workspace/flaviossf/HBGL/models/{run_name}
+  cache_dir_template: /workspace/flaviossf/HBGL/.cache/Eurlex-4k/fold_{fold}
+  rankings_subdir: rankings
+  prepared_artifacts_are_fold_scoped: true
+
+# Canonical invocation (fold is supplied separately):
+#   bash run_eurlex.sh 0 eurlex-fold-0
+# For a short GPU smoke test, override only:
+#   NUM_TRAINING_STEPS=12 SAVE_STEPS=6 bash run_eurlex.sh 0 eurlex-smoke

@@ -36,9 +36,20 @@ Validate all source folds before training:
 ```shell
 python3 dataset_adapter.py validate --dataset-dir ../datasets/WOS-150-H2 --dataset-name WOS-150-H2
 python3 dataset_adapter.py validate --dataset-dir ../datasets/RCV1-103-H3 --dataset-name RCV1-103-H3
+python3 dataset_adapter.py validate --dataset-dir ../datasets/Eurlex-4k --dataset-name Eurlex-4k
 ```
 
 Prepare one fold explicitly (normally `run.py` does this automatically):
+
+```shell
+python3 dataset_adapter.py prepare \
+  --dataset-dir ../datasets/Eurlex-4k \
+  --dataset-name Eurlex-4k \
+  --fold 0 \
+  --prepared-data-dir resource/prepared-datasets
+```
+
+Prepare RCV1 explicitly when needed:
 
 ```shell
 python3 dataset_adapter.py prepare \
@@ -53,12 +64,14 @@ Train a single isolated fold:
 ```shell
 bash run_fold.sh WOS-150-H2 0 wos-fold-0
 bash run_fold.sh RCV1-103-H3 0 rcv1-fold-0
+bash run_eurlex.sh 0 eurlex-fold-0
 ```
 
-The wrappers `run_wos.sh FOLD [RUN_NAME]` and `run_rcv1.sh FOLD [RUN_NAME]`
-call the same runner. Both wrappers default to `PER_GPU_TRAIN_BATCH_SIZE=32`,
-validated on the RTX A6000; override it explicitly when reproducing a different
-batch configuration. Set `HBGL_WANDB=1` to enable Weights & Biases logging.
+The wrappers `run_wos.sh FOLD [RUN_NAME]`, `run_rcv1.sh FOLD [RUN_NAME]`,
+and `run_eurlex.sh FOLD [RUN_NAME]` call the same runner. WOS and RCV1
+default to `PER_GPU_TRAIN_BATCH_SIZE=32`; Eurlex defaults to 8 because it has
+3,956 label tokens and long documents. Set `HBGL_WANDB=1` to enable Weights &
+Biases logging.
 Use a distinct run name for every fold: outputs, prepared artifacts, and
 feature caches are deliberately fold-scoped.
 
@@ -70,18 +83,29 @@ source directory. Fold IDs refer to positional `idx` in `samples.pkl`, **not**
 
 WOS labels are ordered paths and are used to reconstruct its hierarchy. RCV1
 labels can be siblings in arbitrary document order, so its hierarchy is rebuilt
-from `data/rcv1/rcv1.taxonomy` and the versioned topic-code map instead. The
-prepared `label_map.pkl` uses stable source label IDs (`[A_0]`, `[A_1]`, ...),
-which makes checkpoints reproducible across folds.
+from `data/rcv1/rcv1.taxonomy` and the versioned topic-code map instead. Eurlex
+is a flat hierarchy read from `label_taxonomy.pkl`: its integer root children
+are translated to the canonical label names used by HBGL's taxonomy TSV. Its
+external evaluation identity is `text_idx`; repeated test IDs are prepared
+once and scored against `relevance_map.pkl`. The prepared `label_map.pkl` uses
+stable source label IDs (`[A_0]`, `[A_1]`, ...), which makes checkpoints
+reproducible across folds.
 
 Prepared artifacts include a manifest. If the source data changes, regenerate
 with `--force-prepare`; the adapter will not silently reuse incompatible cache.
 
+The complete Eurlex experiment settings are recorded in
+`configs/eurlex-4k.yaml`, including the flat taxonomy contract, fold-supported
+candidate counts, ranking policy, and the default training environment.
+`run_eurlex.sh` loads this YAML automatically; explicitly exported environment
+variables take precedence. For example, remove an old batch override with
+`unset PER_GPU_TRAIN_BATCH_SIZE` before relying on the YAML batch value.
+
 ### HBGL ranking report with the HGCLR metric protocol
 
 The canonical adapter writes `<split>_document_ids.json` beside each JSONL. It
-preserves positional `idx` for WOS and the external `text_idx` for RCV1; it
-never uses `text_idx` to index `samples.pkl`.
+preserves positional `idx` for WOS and external `text_idx` for RCV1/Eurlex;
+it never uses `text_idx` to index `samples.pkl`.
 
 When `EXPORT_RANKINGS=1` (the `run_fold.sh` default), HBGL writes a **dense
 HBGL-only** ranking report for each best checkpoint. It does not modify
@@ -98,8 +122,9 @@ The resulting artifact is:
 {"text_<external-document-id>": {"label_<source-label-id>": probability}}
 ```
 
-It contains every canonical label, so class-filtered tail/head reporting has a
-complete candidate set. Its companion metadata and the HBGL metrics JSON are
+It contains every label supported by HBGL's fold-local training hierarchy.
+Labels absent from that fold's training targets cannot be scored and remain
+missing from the candidate set. Its companion metadata and the HBGL metrics JSON are
 written under:
 
 ```text
@@ -119,15 +144,17 @@ a separate requested ranking report using HGCLR's calculation protocol.
 ```shell
 python3 evaluate_hbgl_ranking.py \
   --ranking-file models/<RUN_NAME>/rankings/best_micro.rnk \
-  --dataset-dir ../datasets/RCV1-103-H3 \
-  --dataset-name RCV1-103-H3 \
+  --dataset-dir ../datasets/Eurlex-4k \
+  --dataset-name Eurlex-4k \
   --fold 0 \
   --output-file models/<RUN_NAME>/rankings/best_micro.rnk.metrics.json \
   --thresholds 1 5 10
 ```
 
 The ranking route requires greedy hierarchical soft-label decoding
-(`--soft_label --soft_label_hier_real`) and one GPU. It validates that the
+(`--soft_label --soft_label_hier_real`) and one GPU. Eurlex skips label-CPT
+because its 3,956-way flat root would make the quadratic label pass
+impractical. The route validates that the
 prepared taxonomy and HBGL's live hierarchy masks select exactly the same
 labels at each level, and that ranking coverage equals the canonical test fold.
 Set `EXPORT_RANKINGS=0` only when this report is intentionally not needed.

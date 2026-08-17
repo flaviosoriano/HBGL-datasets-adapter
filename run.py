@@ -12,7 +12,10 @@ import numpy as np
 import torch
 from torch.utils.data import (DataLoader, SequentialSampler)
 from torch.utils.data.distributed import DistributedSampler
-import wandb
+try:
+    import wandb
+except ImportError:  # W&B is optional unless --wandb is explicitly requested.
+    wandb = None
 import tqdm
 
 from s2s_ft.modeling import BertForSequenceToSequenceWithPseudoMask, BertForSequenceToSequenceUniLMV1
@@ -462,7 +465,11 @@ def resolve_dataset_inputs(args, parser):
         args.ranking_document_ids_file = str(prepared.path / "test_document_ids.json")
         args.ranking_taxonomy_file = str(prepared.path / "label_taxonomy.tsv")
         args.add_vocab_file = str(prepared.path / "label_map.pkl")
-        if args.label_cpt is None:
+        # Eurlex has 3,956 root siblings; label-CPT's quadratic attention
+        # over that sequence is impractical and its flat taxonomy adds no
+        # useful contextual hierarchy.  Keep semantic label-name initialization
+        # unless the caller explicitly supplies --label_cpt.
+        if args.label_cpt is None and args.dataset_name != "Eurlex-4k":
             args.label_cpt = str(prepared.path / "label_taxonomy.tsv")
         logger.info("Using %s canonical fold %d (%s)", args.dataset_name, args.fold, prepared.path)
     else:
@@ -496,7 +503,7 @@ def get_args():
                         help="Training data (json format) for training. Keys: source and target")
     parser.add_argument("--dataset-dir", default=None, type=str,
                         help="Canonical dataset root containing samples.pkl and fold_* splits.")
-    parser.add_argument("--dataset-name", choices=("WOS-150-H2", "RCV1-103-H3"), default=None,
+    parser.add_argument("--dataset-name", choices=("WOS-150-H2", "RCV1-103-H3", "Eurlex-4k"), default=None,
                         help="Canonical dataset name. Used together with --dataset-dir and --fold.")
     parser.add_argument("--fold", default=None, type=int,
                         help="Canonical cross-validation fold to prepare and train.")
@@ -623,6 +630,8 @@ def get_args():
 
     parser.add_argument('--rcv1_expand', type=str, default=None)
     args = parser.parse_args()
+    if args.wandb and wandb is None:
+        parser.error("--wandb requires the optional wandb package; unset HBGL_WANDB or install wandb")
     return resolve_dataset_inputs(args, parser)
 
 
